@@ -1,0 +1,176 @@
+// pidfx_tests.nv — the Q16.16 controller: the same surface, the raw
+// device path, and the one thing this form can get wrong that the
+// Float one cannot.
+//
+// RED ON PURPOSE: every assertion against a FUNCTION reaches
+// `not implemented: pid-nv.<module>.<fn>`, because every body under
+// `src/` is a `todo()`. Assertions against published CONSTANTS pass,
+// because a constant is not a stub.
+//
+// THE NUMBERS BELOW ARE sensorhub's. Its duty cycle is two seconds and
+// its temperature sensor reports quarter-degrees, so a setpoint of
+// 21 °C is 1376256 in Q16.16 and a reading of 19 °C is 1245184. Using
+// them rather than round ones is what makes this suite a check of the
+// consumer rather than of the arithmetic.
+
+use std.test
+use fxq16_16
+use pid
+use pidfx
+
+fn nominal() -> PidFx
+    // kp 2.0, ki 0.1, kd 0, output 0..100 per cent, setpoint 21 °C.
+    pidfx.controller_raw(131072, 6554, 0, 0, 6553600, 1376256)
+
+@test
+fn test_the_raw_constructor_is_what_a_device_with_gains_in_flash_calls() [io]
+    test.case("no float anywhere in the caller, and no fixedpoint-nv type named either")
+    let p = nominal()
+    test.assert_eq(pidfx.setpoint_raw(p), 1376256)
+    test.assert_eq(pidfx.output_raw(p), 0)
+    test.assert_eq(pidfx.integral_raw(p), 0)
+    test.assert(pidfx.is_primed(p) == false)
+
+    test.case("and the typed constructor agrees with it")
+    let q = pidfx.controller(
+                pidfx.gains(fxq16_16.from_int(2), fxq16_16.from_raw(6554), fxq16_16.zero()),
+                pidfx.limits(fxq16_16.zero(), fxq16_16.from_int(100)),
+                fxq16_16.from_int(21))
+    test.assert_eq(pidfx.setpoint_raw(q), pidfx.setpoint_raw(p))
+    test.assert_eq(fxq16_16.raw(pidfx.kp(pidfx.gains_of(q))),
+                   fxq16_16.raw(pidfx.kp(pidfx.gains_of(p))))
+
+@test
+fn test_the_two_forms_share_their_policy_discriminants() [io]
+    test.case("a policy travels between the Float form and this one unchanged")
+    let p = pidfx.with_windup_code(nominal(), pid.PID_WINDUP_BACK_CALCULATION)
+    test.assert_eq(pidfx.windup_of(p), pid.PID_WINDUP_BACK_CALCULATION)
+    let q = pidfx.with_derivative_code(nominal(), pid.PID_DERIV_ON_ERROR)
+    test.assert_eq(pidfx.deriv_of(q), pid.PID_DERIV_ON_ERROR)
+
+    test.case("and the defaults are the same two")
+    test.assert_eq(pidfx.windup_of(nominal()), pid.PID_WINDUP_CLAMP)
+    test.assert_eq(pidfx.deriv_of(nominal()), pid.PID_DERIV_ON_MEASUREMENT)
+
+@test
+fn test_a_step_in_raw_integers_is_the_whole_device_path() [io]
+    test.case("a sensor reading is an integer and a PWM register takes one")
+    var p = pidfx.with_max_dt(nominal(), fxq16_16.from_int(4))
+    p = pidfx.step_raw(p, 1245184, 131072)
+    test.assert(pidfx.is_primed(p))
+    test.case("the error is 21 - 19 = 2, which is 131072 in Q16.16")
+    test.assert_eq(pidfx.error_raw(p), 131072)
+    test.case("and the proportional term is kp times it: 2 * 2 = 4, which is 262144")
+    test.assert_eq(pidfx.p_term_raw(p), 262144)
+
+@test
+fn test_the_first_step_takes_no_derivative_here_either() [io]
+    test.case("the same rule the Float form states")
+    let p = pidfx.step_raw(nominal(), 1245184, 131072)
+    test.assert_eq(pidfx.d_term_raw(p), 0)
+
+@test
+fn test_a_hold_is_what_sensorhub_s_missing_reading_calls() [io]
+    test.case("its temperature peripheral answers NO_READING on a board with no TEMP unit")
+    var p = pidfx.step_raw(pidfx.step_raw(nominal(), 1245184, 131072), 1261568, 131072)
+    let out = pidfx.output_raw(p)
+    let acc = pidfx.integral_raw(p)
+    p = pidfx.hold(p)
+    test.case("the output stays — a heater 60 per cent on stays 60 per cent on")
+    test.assert_eq(pidfx.output_raw(p), out)
+    test.assert_eq(pidfx.integral_raw(p), acc)
+    test.case("and the derivative is un-primed, so the next real sample does not difference across the gap")
+    test.assert(pidfx.is_primed(p) == false)
+    test.assert_eq(pidfx.d_term_raw(pidfx.step_raw(p, 1277952, 131072)), 0)
+
+@test
+fn test_a_non_positive_dt_holds_here_too() [io]
+    test.case("no division by a zero dt, in either form")
+    var p = pidfx.step_raw(nominal(), 1245184, 131072)
+    let before = pidfx.output_raw(p)
+    p = pidfx.step_raw(p, 1179648, 0)
+    test.assert_eq(pidfx.output_raw(p), before)
+
+@test
+fn test_bumpless_transfer_works_in_fixed_point() [io]
+    test.case("a gain change does not move the output")
+    var p = pidfx.step_raw(pidfx.step_raw(nominal(), 1245184, 131072), 1261568, 131072)
+    let before = pidfx.output_raw(p)
+    p = pidfx.with_gains(p, pidfx.gains(fxq16_16.from_int(4), fxq16_16.from_raw(13108),
+                                        fxq16_16.zero()))
+    test.assert_eq(pidfx.output_raw(p), before)
+
+    test.case("and manual to automatic does not jolt")
+    let m = pidfx.with_manual_output(nominal(), fxq16_16.from_int(42))
+    test.assert_eq(pidfx.output_raw(m), 2752512)
+
+@test
+fn test_the_output_is_clamped_to_the_limits() [io]
+    test.case("a setpoint far above what the actuator can reach saturates and says so")
+    var p = pidfx.with_setpoint_raw(nominal(), 65536000)
+    p = pidfx.step_raw(p, 0, 131072)
+    test.assert(pidfx.is_saturated(p))
+    test.assert_eq(pidfx.output_raw(p), 6553600)
+
+@test
+fn test_a_gain_that_saturated_on_the_way_in_is_reported_where_a_person_is_looking() [io]
+    test.case("this form's own failure mode: Q16.16 stops at 32767.99998 and says nothing")
+    // `from_float(40000.0)` clamps rather than refusing, which is the
+    // right behaviour for a `@value` constructor and the wrong thing
+    // to discover from a control loop's behaviour.
+    let big = pidfx.controller(
+                  pidfx.gains(fxq16_16.from_float(40000.0), fxq16_16.zero(), fxq16_16.zero()),
+                  pidfx.limits(fxq16_16.zero(), fxq16_16.from_int(100)),
+                  fxq16_16.from_int(21))
+    test.assert_some(pidfx.check(big))
+
+    test.case("and a nominal controller passes")
+    test.assert_none(pidfx.check(nominal()))
+
+@test
+fn test_the_configuration_checks_are_the_float_form_s() [io]
+    test.case("limits the wrong way round")
+    let bad = pidfx.controller(
+                  pidfx.gains(fxq16_16.from_int(2), fxq16_16.zero(), fxq16_16.zero()),
+                  pidfx.limits(fxq16_16.from_int(100), fxq16_16.zero()),
+                  fxq16_16.from_int(21))
+    match pidfx.check(bad)
+        Some(e) =>
+            match e
+                PidLimitsNotOrdered(_, _) => test.assert(true)
+                _                         => test.fail("the refusal should name the limits")
+        None    => test.fail("a low limit above a high one saturates on every step")
+
+    test.case("and an unknown policy code")
+    test.assert_some(pidfx.check(pidfx.with_windup_code(nominal(), 9)))
+
+@test
+fn test_the_remaining_configuration_and_readers_round_trip() [io]
+    test.case("the filter, the back-calculation gain and the dt ceiling")
+    let f = pidfx.with_derivative_filter(nominal(), fxq16_16.from_float(0.01))
+    test.assert_eq(fxq16_16.raw(pidfx.filter_tau(f)), fxq16_16.raw(fxq16_16.from_float(0.01)))
+    let b = pidfx.with_back_calculation(nominal(), fxq16_16.one())
+    test.assert_eq(fxq16_16.raw(pidfx.back_calculation_gain(b)), 65536)
+    let d = pidfx.with_max_dt(nominal(), fxq16_16.from_int(4))
+    test.assert_eq(fxq16_16.raw(pidfx.max_dt(d)), 262144)
+
+    test.case("the typed setpoint and output readers agree with the raw ones")
+    let s = pidfx.with_setpoint(nominal(), fxq16_16.from_int(23))
+    test.assert_eq(fxq16_16.raw(pidfx.setpoint(s)), pidfx.setpoint_raw(s))
+    test.assert_eq(fxq16_16.raw(pidfx.output(s)), pidfx.output_raw(s))
+
+    test.case("and the limits come back as they went in")
+    let l = pidfx.with_limits(nominal(), pidfx.limits(fxq16_16.zero(), fxq16_16.from_int(50)))
+    test.assert_eq(fxq16_16.raw(pidfx.limit_low(pidfx.limits_of(l))), 0)
+    test.assert_eq(fxq16_16.raw(pidfx.limit_high(pidfx.limits_of(l))), 3276800)
+
+    test.case("the gain readers")
+    let g = pidfx.gains(fxq16_16.from_int(2), fxq16_16.from_int(3), fxq16_16.from_int(4))
+    test.assert_eq(fxq16_16.raw(pidfx.ki(g)), 196608)
+    test.assert_eq(fxq16_16.raw(pidfx.kd(g)), 262144)
+
+    test.case("and a reset clears the history")
+    let r = pidfx.reset(pidfx.step_raw(nominal(), 1245184, 131072))
+    test.assert_eq(pidfx.integral_raw(r), 0)
+    test.assert_eq(pidfx.output_raw(r), 0)
+    test.assert_eq(pidfx.i_term_raw(r), 0)

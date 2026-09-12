@@ -1,0 +1,86 @@
+// piderr.nv — what a controller configuration can be wrong about.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// THERE IS NO ERROR IN THE LOOP, ONLY IN THE SETUP.  `step` cannot
+// fail: it is a `@value` function, it has nowhere to put a refusal
+// (SPEC § 14.5 keeps an unboxed struct out of a `Result`), and a
+// control loop that had to match on a `Result` every millisecond would
+// be a control loop nobody writes correctly.  So every argument a
+// caller can get wrong is checked ONCE, by `pid.check`, at the moment
+// the controller is configured — which is where a person is looking
+// and where the message can name the field.
+//
+// What `step` does with a bad argument is DEFINED rather than
+// refused, and each definition is the safe one: a non-positive `dt`
+// holds, a `dt` past the ceiling is clamped, a measurement that is not
+// a number holds.  A controller that trapped would take an actuator
+// with it.
+
+// What is wrong with a controller's configuration.
+pub enum PidError
+    // The output limits are the wrong way round or equal.  A
+    // controller whose low limit is not below its high one saturates
+    // on every step and integrates forever.
+    PidLimitsNotOrdered(lo: Float, hi: Float)
+    // A gain is negative.  A negative `kp` is a controller that drives
+    // AWAY from its setpoint, and it is nearly always a sign error in
+    // the plant's wiring rather than an intention — a caller that
+    // means it inverts the measurement instead, where it is visible.
+    PidGainNegative(name: Str, value: Float)
+    // The derivative filter's time constant is negative.
+    PidFilterNegative(tau: Float)
+    // The back-calculation gain is negative, or it is zero while the
+    // anti-windup policy is back-calculation — which is that policy
+    // switched off without saying so.
+    PidBackCalculationGainInvalid(kt: Float)
+    // The `dt` ceiling is not positive.
+    PidMaxDtInvalid(dt_max: Float)
+    // A gain, a limit or a setpoint is not a finite number.  Usually a
+    // division somewhere upstream; always worth saying rather than
+    // letting it propagate into an actuator.
+    PidNotFinite(name: Str)
+    // A discriminant code is not one of the policies this package has.
+    // Reachable only through `with_windup_code` and
+    // `with_derivative_code`, which take an `Int` because a `@value`
+    // struct cannot hold an enum — see the README.
+    PidUnknownPolicyCode(field: Str, code: Int)
+    // The relay experiment has not seen enough complete cycles to
+    // estimate anything.  `got` and `want` are cycle counts.
+    PidTuneNotConverged(got: Int, want: Int)
+    // The relay experiment produced an amplitude or a period of zero,
+    // which means the plant did not respond to the relay at all —
+    // a stuck actuator, a disconnected sensor, or a relay amplitude
+    // too small to move anything.
+    PidTuneNoOscillation
+
+// What went wrong, in words, for a caller that logs rather than
+// branches.
+//
+// `Result<_, PidError>` requires it: SPEC § 3.4 admits a `Result`
+// error type only if it implements `Error`, so this impl is what lets
+// the tuner name its own refusal instead of returning `Result<_, Str>`.
+//
+// ```novo
+// use piderr
+//
+// fn main() [io]
+//     println(piderr.describe(PidTuneNoOscillation))
+// ```
+impl Error for PidError
+    fn message(self) -> Str
+        todo("pid-nv.piderr.PidError.message")
+
+// The same sentence as `message`, as a free function, for a caller
+// that has an error value rather than a `Result` to call `.message()`
+// on.
+//
+// ```novo
+// use piderr
+//
+// fn main() [io]
+//     println(piderr.describe(PidLimitsNotOrdered(1.0, 0.0)))
+// ```
+pub fn describe(e: PidError) -> Str []
+    todo("pid-nv.piderr.describe")

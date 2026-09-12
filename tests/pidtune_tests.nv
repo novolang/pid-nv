@@ -1,0 +1,159 @@
+// pidtune_tests.nv — the relay experiment and the five tuning rules.
+//
+// RED ON PURPOSE: every assertion against a FUNCTION reaches
+// `not implemented: pid-nv.<module>.<fn>`, because every body under
+// `src/` is a `todo()`. Assertions against published CONSTANTS pass,
+// because a constant is not a stub.
+//
+// THE RULE NUMBERS ARE THE PUBLISHED TABLES. Ziegler and Nichols 1942,
+// Tyreus and Luyben 1992, Pessen 1954, and the no-overshoot row every
+// handbook prints beside them. A `Ku` of 2.5 and a `Tu` of 30 s go in
+// and the gains that come out are arithmetic a reader can check
+// against the table in the doc comment.
+
+use std.test
+use pid
+use pidtune
+
+@test
+fn test_the_five_rules_have_their_published_numbers() [io]
+    test.case("Ziegler-Nichols classic: kp = 0.6*Ku, Ti = Tu/2, Td = Tu/8")
+    // Ku 2.5, Tu 30 → kp 1.5, Ti 15, Td 3.75
+    // Parallel form: ki = kp/Ti = 0.1, kd = kp*Td = 5.625
+    let zn = pidtune.gains_from(pidtune.ultimate(2.5, 30.0), pidtune.PID_RULE_ZN_CLASSIC)
+    test.assert_eq(pid.kp(zn), 1.5)
+    test.assert_eq(pid.ki(zn), 0.1)
+    test.assert_eq(pid.kd(zn), 5.625)
+
+    test.case("Ziegler-Nichols PI has NO derivative, which is what a noisy measurement wants")
+    let pi = pidtune.gains_from(pidtune.ultimate(2.5, 30.0), pidtune.PID_RULE_ZN_PI)
+    test.assert_eq(pid.kd(pi), 0.0)
+    test.assert_eq(pid.kp(pi), 1.125)
+
+    test.case("Tyreus-Luyben is the conservative one, and its integral gain is much smaller")
+    let tl = pidtune.gains_from(pidtune.ultimate(2.5, 30.0), pidtune.PID_RULE_TYREUS_LUYBEN)
+    test.assert_eq(pid.kp(tl), 1.125)
+    test.assert(pid.ki(tl) < pid.ki(zn))
+
+    test.case("no-overshoot is the slow one, and its proportional gain is the smallest")
+    let no = pidtune.gains_from(pidtune.ultimate(2.5, 30.0), pidtune.PID_RULE_NO_OVERSHOOT)
+    test.assert_eq(pid.kp(no), 0.5)
+    test.assert(pid.kp(no) < pid.kp(tl))
+
+    test.case("Pessen is faster than classic")
+    let pe = pidtune.gains_from(pidtune.ultimate(2.5, 30.0), pidtune.PID_RULE_PESSEN)
+    test.assert(pid.kp(pe) > pid.kp(zn))
+
+@test
+fn test_a_failed_experiment_produces_a_controller_that_does_nothing() [io]
+    test.case("the one safe answer a @value function can give")
+    let g = pidtune.gains_from(pidtune.ultimate(0.0, 0.0), pidtune.PID_RULE_TYREUS_LUYBEN)
+    test.assert_eq(pid.kp(g), 0.0)
+    test.assert_eq(pid.ki(g), 0.0)
+    test.assert_eq(pid.kd(g), 0.0)
+
+    test.case("and so does a rule code this package does not have")
+    let h = pidtune.gains_from(pidtune.ultimate(2.5, 30.0), 9)
+    test.assert_eq(pid.kp(h), 0.0)
+
+    test.case("which is why the whole chain is safe without a Result in it")
+    test.assert_some(pidtune.check_rule(9))
+    test.assert_none(pidtune.check_rule(pidtune.PID_RULE_TYREUS_LUYBEN))
+
+@test
+fn test_the_rule_vocabulary_and_the_discriminants_agree() [io]
+    test.assert_eq(pidtune.rule_code(PidZieglerNicholsClassic), pidtune.PID_RULE_ZN_CLASSIC)
+    test.assert_eq(pidtune.rule_code(PidZieglerNicholsPi), pidtune.PID_RULE_ZN_PI)
+    test.assert_eq(pidtune.rule_code(PidTyreusLuyben), pidtune.PID_RULE_TYREUS_LUYBEN)
+    test.assert_eq(pidtune.rule_code(PidPessenIntegral), pidtune.PID_RULE_PESSEN)
+    test.assert_eq(pidtune.rule_code(PidNoOvershoot), pidtune.PID_RULE_NO_OVERSHOOT)
+
+    test.assert_some(pidtune.rule_of_code(pidtune.PID_RULE_PESSEN))
+    test.assert_none(pidtune.rule_of_code(9))
+
+@test
+fn test_an_ultimate_pair_is_worth_keeping_between_runs() [io]
+    test.case("a plant's Ku and Tu change slowly, so a stored pair re-tunes without a new experiment")
+    let u = pidtune.ultimate(2.5, 30.0)
+    test.assert_eq(pidtune.ultimate_gain(u), 2.5)
+    test.assert_eq(pidtune.ultimate_period(u), 30.0)
+
+    test.case("and the same pair through two rules gives two gain sets")
+    let a = pidtune.gains_from(u, pidtune.PID_RULE_ZN_CLASSIC)
+    let b = pidtune.gains_from(u, pidtune.PID_RULE_NO_OVERSHOOT)
+    test.assert(pid.kp(a) != pid.kp(b))
+
+@test
+fn test_a_fresh_relay_has_measured_nothing() [io]
+    let r = pidtune.relay(21.0, 50.0, 0.5)
+    test.assert_eq(pidtune.relay_cycles(r), 0)
+    test.assert_eq(pidtune.relay_period(r), 0.0)
+    test.assert_eq(pidtune.relay_swing(r), 0.0)
+    test.assert_eq(pidtune.relay_elapsed(r), 0.0)
+    test.assert_eq(pidtune.relay_amplitude(r), 50.0)
+
+    test.case("and it cannot report an ultimate pair yet")
+    test.assert_some(pidtune.check_experiment(r))
+    match pidtune.check_experiment(r)
+        Some(e) =>
+            match e
+                PidTuneNotConverged(got, want) =>
+                    test.assert_eq(got, 0)
+                    test.assert(want >= 2)
+                _                              => test.fail("nothing has happened, so it is not converged")
+        None    => test.fail("a fresh relay has seen no cycles")
+
+@test
+fn test_the_relay_drives_a_square_wave_and_the_clock_is_the_caller_s() [io]
+    test.case("the output is plus or minus the amplitude, and nothing between")
+    var r = pidtune.relay(21.0, 50.0, 0.5)
+    r = pidtune.relay_step(r, 19.0, 0.1)
+    let u = pidtune.relay_output(r)
+    test.assert(u == 50.0 or u == 0.0 - 50.0)
+
+    test.case("and the elapsed time is what the caller handed in")
+    test.assert_eq(pidtune.relay_elapsed(r), 0.1)
+    r = pidtune.relay_step(r, 19.0, 0.1)
+    test.assert_eq(pidtune.relay_elapsed(r), 0.2)
+
+    test.case("a non-positive dt holds, as everywhere else in this package")
+    let before = pidtune.relay_elapsed(r)
+    r = pidtune.relay_step(r, 19.0, 0.0)
+    test.assert_eq(pidtune.relay_elapsed(r), before)
+
+@test
+fn test_the_hysteresis_band_is_what_stops_a_noisy_sensor_chattering() [io]
+    test.case("a measurement inside the band does not flip the relay")
+    var r = pidtune.relay(21.0, 50.0, 0.5)
+    r = pidtune.relay_step(r, 19.0, 0.1)
+    let first = pidtune.relay_output(r)
+    // 21.2 is inside the ±0.5 band around the setpoint.
+    r = pidtune.relay_step(r, 21.2, 0.1)
+    test.assert_eq(pidtune.relay_output(r), first)
+
+    test.case("and one outside it does")
+    r = pidtune.relay_step(r, 22.0, 0.1)
+    test.assert(pidtune.relay_output(r) != first)
+
+@test
+fn test_settling_is_a_fact_and_the_decision_is_the_caller_s() [io]
+    test.case("`four cycles within five per cent` is a judgement about a plant, not a constant")
+    let r = pidtune.relay(21.0, 50.0, 0.5)
+    test.assert(pidtune.relay_settled(r, 0.05) == false)
+    test.assert(pidtune.relay_settled(r, 0.5) == false)
+
+@test
+fn test_an_experiment_that_found_nothing_says_which_kind_of_nothing() [io]
+    test.case("a plant that did not move at all is hardware, not a bad tune")
+    var r = pidtune.relay(21.0, 50.0, 0.5)
+    // A measurement that never leaves the band: a stuck actuator, a
+    // disconnected sensor, or an amplitude too small to move anything.
+    r = pidtune.relay_step(r, 21.0, 1.0)
+    r = pidtune.relay_step(r, 21.0, 1.0)
+    r = pidtune.relay_step(r, 21.0, 1.0)
+    test.assert_some(pidtune.check_experiment(r))
+
+    test.case("and the ultimate pair it reports is zero, which becomes zero gains")
+    let u = pidtune.ultimate_of(r)
+    test.assert_eq(pidtune.ultimate_gain(u), 0.0)
+    test.assert_eq(pidtune.ultimate_period(u), 0.0)

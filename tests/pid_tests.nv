@@ -1,0 +1,273 @@
+// pid_tests.nv — the Float controller: the loop, the two anti-windup
+// policies, the derivative kick, and bumpless transfer.
+//
+// RED ON PURPOSE: every assertion against a FUNCTION reaches
+// `not implemented: pid-nv.<module>.<fn>`, because every body under
+// `src/` is a `todo()`. Assertions against published CONSTANTS pass,
+// because a constant is not a stub.
+//
+// THERE IS NO STANDARD TEST VECTOR FOR A PID CONTROLLER — the
+// arithmetic is three lines and every implementation agrees on it.
+// What implementations DISAGREE on is everything around it, and that
+// is what is asserted here: when the derivative is skipped, what a
+// zero `dt` does, whether the integral keeps accumulating in
+// saturation, whether a gain change moves the output, and which of the
+// eighteen fields a `hold` touches. Each of those is a decision this
+// package made and a place another library made a different one.
+
+use std.test
+use pid
+use piderr
+
+fn nominal() -> PidF
+    pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+
+@test
+fn test_a_fresh_controller_is_at_rest_and_not_primed() [io]
+    test.case("nothing has been measured, so there is no derivative to take")
+    let p = nominal()
+    test.assert_eq(pid.output(p), 0.0)
+    test.assert_eq(pid.integral(p), 0.0)
+    test.assert(pid.is_primed(p) == false)
+    test.assert(pid.is_saturated(p) == false)
+    test.assert_eq(pid.setpoint(p), 21.0)
+
+@test
+fn test_the_first_step_takes_no_derivative() [io]
+    test.case("a derivative against a previous measurement of zero is a spike that reaches the actuator")
+    let p = pid.step(nominal(), 19.0, 0.1)
+    test.assert_eq(pid.d_term(p), 0.0)
+    test.case("and the controller is primed afterwards, so the second step does take one")
+    test.assert(pid.is_primed(p))
+    let q = pid.step(p, 19.5, 0.1)
+    test.assert(pid.d_term(q) != 0.0)
+
+@test
+fn test_the_error_is_setpoint_minus_measurement_and_the_p_term_is_kp_times_it() [io]
+    test.case("21 - 19 is 2, and kp is 2")
+    let p = pid.step(nominal(), 19.0, 0.1)
+    test.assert_eq(pid.error(p), 2.0)
+    test.assert_eq(pid.p_term(p), 4.0)
+
+    test.case("the integral term is ki times the accumulated error-seconds: 0.5 * 2 * 0.1")
+    test.assert_eq(pid.integral(p), 0.2)
+    test.assert_eq(pid.i_term(p), 0.1)
+
+    test.case("and the output is the three terms added, then clamped")
+    test.assert_eq(pid.output(p), pid.p_term(p) + pid.i_term(p) + pid.d_term(p))
+
+@test
+fn test_a_zero_or_negative_dt_holds_rather_than_dividing() [io]
+    test.case("a controller that divided by a zero dt would slam an actuator with an infinite derivative")
+    var p = pid.step(nominal(), 19.0, 0.1)
+    let before = pid.output(p)
+    p = pid.step(p, 18.0, 0.0)
+    test.assert_eq(pid.output(p), before)
+    test.assert(pid.is_primed(p) == false)
+
+    test.case("and so does a negative one")
+    var q = pid.step(nominal(), 19.0, 0.1)
+    let b2 = pid.output(q)
+    q = pid.step(q, 18.0, 0.0 - 0.1)
+    test.assert_eq(pid.output(q), b2)
+
+@test
+fn test_a_missed_deadline_is_clamped_rather_than_integrated_whole() [io]
+    test.case("a task that was preempted for five seconds should not wind up on a gap nobody observed")
+    var a = pid.with_max_dt(nominal(), 1.0)
+    a = pid.step(a, 19.0, 0.1)
+    a = pid.step(a, 19.0, 5.0)
+
+    var b = pid.with_max_dt(nominal(), 1.0)
+    b = pid.step(b, 19.0, 0.1)
+    b = pid.step(b, 19.0, 1.0)
+
+    test.assert_eq(pid.integral(a), pid.integral(b))
+    test.case("and the ceiling defaults to one second")
+    test.assert_eq(pid.max_dt(nominal()), 1.0)
+
+@test
+fn test_a_hold_keeps_the_output_and_the_integral_and_drops_the_derivative() [io]
+    test.case("a sensor that did not answer is a missing measurement, not a new experiment")
+    var p = pid.step(pid.step(nominal(), 19.0, 0.1), 19.5, 0.1)
+    let out = pid.output(p)
+    let acc = pid.integral(p)
+    p = pid.hold(p)
+    test.assert_eq(pid.output(p), out)
+    test.assert_eq(pid.integral(p), acc)
+    test.case("but the derivative is un-primed, so the next real sample starts afresh")
+    test.assert(pid.is_primed(p) == false)
+    test.assert_eq(pid.d_term(pid.step(p, 20.0, 0.1)), 0.0)
+
+@test
+fn test_a_reset_clears_the_history_and_keeps_the_configuration() [io]
+    test.case("what a caller does when the plant changed underneath it")
+    var p = pid.step(pid.step(nominal(), 19.0, 0.1), 19.5, 0.1)
+    p = pid.reset(p)
+    test.assert_eq(pid.integral(p), 0.0)
+    test.assert_eq(pid.output(p), 0.0)
+    test.assert(pid.is_primed(p) == false)
+    test.case("and the gains, limits and setpoint survive")
+    test.assert_eq(pid.kp(pid.gains_of(p)), 2.0)
+    test.assert_eq(pid.limit_high(pid.limits_of(p)), 100.0)
+    test.assert_eq(pid.setpoint(p), 21.0)
+
+@test
+fn test_clamping_stops_the_integral_growing_into_saturation() [io]
+    test.case("the classic industrial bug: a saturated actuator and an integral that keeps going")
+    // A setpoint far above anything the actuator can reach, so the
+    // output saturates immediately and stays there.
+    var c = pid.with_setpoint(nominal(), 1000.0)
+    c = pid.with_windup(c, PidWindupClamp)
+    c = pid.step(c, 0.0, 0.1)
+    test.assert(pid.is_saturated(c))
+    let first = pid.integral(c)
+    c = pid.step(c, 0.0, 0.1)
+    c = pid.step(c, 0.0, 0.1)
+    test.assert_eq(pid.integral(c), first)
+
+    test.case("and with no policy at all it grows without bound, which is what the policy is for")
+    var n = pid.with_setpoint(nominal(), 1000.0)
+    n = pid.with_windup(n, PidWindupNone)
+    n = pid.step(n, 0.0, 0.1)
+    let n1 = pid.integral(n)
+    n = pid.step(n, 0.0, 0.1)
+    test.assert(pid.integral(n) > n1)
+
+@test
+fn test_back_calculation_unwinds_the_integral_instead_of_freezing_it() [io]
+    test.case("the difference from clamping: the recovery has no corner in it")
+    var b = pid.with_setpoint(nominal(), 1000.0)
+    b = pid.with_windup(b, PidWindupBackCalculation)
+    b = pid.with_back_calculation(b, 1.0)
+    b = pid.step(b, 0.0, 0.1)
+    let saturated_integral = pid.integral(b)
+    test.assert(pid.is_saturated(b))
+    test.case("a second saturated step drives the integral DOWN, which clamping never does")
+    b = pid.step(b, 0.0, 0.1)
+    test.assert(pid.integral(b) < saturated_integral)
+
+@test
+fn test_the_derivative_source_decides_whether_a_setpoint_change_kicks() [io]
+    test.case("on measurement: changing the setpoint produces no derivative at all")
+    var m = pid.with_derivative(nominal(), PidDerivOnMeasurement)
+    m = pid.step(m, 19.0, 0.1)
+    m = pid.with_setpoint(m, 30.0)
+    m = pid.step(m, 19.0, 0.1)
+    test.assert_eq(pid.d_term(m), 0.0)
+
+    test.case("on error: the same setpoint change is a step in the error and the derivative spikes")
+    var e = pid.with_derivative(nominal(), PidDerivOnError)
+    e = pid.step(e, 19.0, 0.1)
+    e = pid.with_setpoint(e, 30.0)
+    e = pid.step(e, 19.0, 0.1)
+    test.assert(pid.d_term(e) != 0.0)
+
+@test
+fn test_a_gain_change_does_not_move_the_output() [io]
+    test.case("bumpless transfer — the function that makes this a controller rather than a formula")
+    var p = pid.step(pid.step(nominal(), 19.0, 0.1), 19.2, 0.1)
+    let before = pid.output(p)
+    p = pid.with_gains(p, pid.gains(4.0, 1.0, 0.2))
+    test.assert_eq(pid.output(p), before)
+    test.case("and the new gains are in place for the next step")
+    test.assert_eq(pid.kp(pid.gains_of(p)), 4.0)
+    test.assert_eq(pid.ki(pid.gains_of(p)), 1.0)
+    test.assert_eq(pid.kd(pid.gains_of(p)), 0.2)
+
+@test
+fn test_manual_to_automatic_does_not_jolt() [io]
+    test.case("an operator drove the valve to 42 by hand; switching the loop on should not step it")
+    let p = pid.with_manual_output(nominal(), 42.0)
+    test.assert_eq(pid.output(p), 42.0)
+    test.case("and an output outside the limits is clamped first")
+    test.assert_eq(pid.output(pid.with_manual_output(nominal(), 500.0)), 100.0)
+    test.assert_eq(pid.output(pid.with_manual_output(nominal(), 0.0 - 5.0)), 0.0)
+
+@test
+fn test_a_setpoint_change_leaves_the_integral_alone() [io]
+    test.case("a setpoint change is an intentional step and the loop is supposed to respond to it")
+    var p = pid.step(pid.step(nominal(), 19.0, 0.1), 19.5, 0.1)
+    let acc = pid.integral(p)
+    p = pid.with_setpoint(p, 25.0)
+    test.assert_eq(pid.integral(p), acc)
+    test.assert_eq(pid.setpoint(p), 25.0)
+
+@test
+fn test_the_policies_travel_as_discriminants_because_a_value_struct_cannot_hold_an_enum() [io]
+    test.case("the enum is the vocabulary and the Int is the field")
+    test.assert_eq(pid.windup_code(PidWindupNone), pid.PID_WINDUP_NONE)
+    test.assert_eq(pid.windup_code(PidWindupClamp), pid.PID_WINDUP_CLAMP)
+    test.assert_eq(pid.windup_code(PidWindupBackCalculation), pid.PID_WINDUP_BACK_CALCULATION)
+    test.assert_eq(pid.deriv_code(PidDerivOnError), pid.PID_DERIV_ON_ERROR)
+    test.assert_eq(pid.deriv_code(PidDerivOnMeasurement), pid.PID_DERIV_ON_MEASUREMENT)
+
+    test.case("and back")
+    test.assert_some(pid.windup_of_code(pid.PID_WINDUP_CLAMP))
+    test.assert_none(pid.windup_of_code(9))
+    test.assert_some(pid.deriv_of_code(pid.PID_DERIV_ON_ERROR))
+    test.assert_none(pid.deriv_of_code(9))
+
+    test.case("an unknown code leaves the field alone rather than trapping — check is what reports it")
+    let p = pid.with_windup_code(nominal(), 9)
+    test.assert_eq(pid.windup_of(p), pid.PID_WINDUP_CLAMP)
+    test.assert_some(pid.check(pid.with_windup_code(nominal(), 9)))
+
+@test
+fn test_the_defaults_are_the_safe_ones() [io]
+    test.case("clamping, derivative on measurement, no filter, a one-second ceiling")
+    let p = nominal()
+    test.assert_eq(pid.windup_of(p), pid.PID_WINDUP_CLAMP)
+    test.assert_eq(pid.deriv_of(p), pid.PID_DERIV_ON_MEASUREMENT)
+    test.assert_eq(pid.filter_tau(p), 0.0)
+    test.assert_eq(pid.back_calculation_gain(p), 0.0)
+    test.assert_eq(pid.max_dt(p), 1.0)
+
+@test
+fn test_a_configuration_is_checked_once_where_a_person_is_looking() [io]
+    test.case("limits the wrong way round")
+    match pid.check(pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(100.0, 0.0), 21.0))
+        Some(e) =>
+            match e
+                PidLimitsNotOrdered(lo, hi) =>
+                    test.assert_eq(lo, 100.0)
+                    test.assert_eq(hi, 0.0)
+                _                           => test.fail("the refusal should name both limits")
+        None    => test.fail("a low limit above a high one saturates on every step")
+
+    test.case("a negative gain, which is nearly always a sign error in the plant's wiring")
+    test.assert_some(pid.check(pid.controller(pid.gains(0.0 - 2.0, 0.5, 0.1),
+                                              pid.limits(0.0, 100.0), 21.0)))
+
+    test.case("back-calculation selected with a zero gain, which is that policy switched off silently")
+    let b = pid.with_windup(nominal(), PidWindupBackCalculation)
+    test.assert_some(pid.check(b))
+    test.assert_none(pid.check(pid.with_back_calculation(b, 1.0)))
+
+    test.case("and a nominal controller passes")
+    test.assert_none(pid.check(nominal()))
+
+@test
+fn test_a_derivative_filter_quiets_the_derivative_term() [io]
+    test.case("differentiating amplifies noise by the frequency, which is why so many loops run with kd = 0")
+    var raw = pid.step(nominal(), 19.0, 0.1)
+    raw = pid.step(raw, 19.5, 0.1)
+
+    var filtered = pid.with_derivative_filter(nominal(), 0.5)
+    filtered = pid.step(filtered, 19.0, 0.1)
+    filtered = pid.step(filtered, 19.5, 0.1)
+
+    test.assert_eq(pid.filter_tau(filtered), 0.5)
+    test.assert(pid.d_term(filtered) != pid.d_term(raw))
+
+@test
+fn test_every_refusal_says_something_a_log_can_print() [io]
+    test.assert(piderr.describe(PidLimitsNotOrdered(1.0, 0.0)) != "")
+    test.assert(piderr.describe(PidGainNegative("kp", 0.0 - 1.0)) != "")
+    test.assert(piderr.describe(PidFilterNegative(0.0 - 1.0)) != "")
+    test.assert(piderr.describe(PidBackCalculationGainInvalid(0.0)) != "")
+    test.assert(piderr.describe(PidMaxDtInvalid(0.0)) != "")
+    test.assert(piderr.describe(PidNotFinite("setpoint")) != "")
+    test.assert(piderr.describe(PidUnknownPolicyCode("windup", 9)) != "")
+    test.assert(piderr.describe(PidTuneNotConverged(1, 2)) != "")
+    test.assert(piderr.describe(PidTuneNoOscillation) != "")

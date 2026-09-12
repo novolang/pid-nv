@@ -1,0 +1,55 @@
+[package]
+name        = "pid-nv"
+version     = "0.0.1"
+description = "A PID controller as a @value state stepped with a measurement and a dt the caller supplies: gains, setpoint, output limits with clamping or back-calculation anti-windup, derivative on measurement or on error with a first-order filter, bumpless transfer on a gain change and on manual-to-auto, and a dt ceiling for a missed deadline.  Two forms — Float, and fixedpoint-nv's FxQ16_16 for a core with no FPU — and a relay auto-tuner beside them.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`.  A controller has NO CLOCK: `step` takes the elapsed seconds
+# as an argument, which is what keeps this package `core` and what
+# makes a simulation reproducible — the same measurement sequence and
+# the same dt sequence give the same outputs on a laptop and on a
+# device.  Nothing here reads a sensor or drives an actuator; the
+# measurement arrives as a number and the output leaves as one.
+#
+# It carries `tests/embedded_probe.nv`, and the claim covers BOTH
+# forms: `pid`'s `Float` state and `pidfx`'s fixed-point one both build
+# for a Cortex-M4.  The consumer is real — sensorhub reads an on-die
+# temperature every two seconds and has nothing to close the loop with.
+layer       = "core"
+
+category    = "embedded"
+
+tags        = ["pid", "control", "controller", "anti-windup", "autotune", "fixed-point", "embedded", "no-alloc"]
+repository  = "https://github.com/novolang/pid-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "A PID loop whose clock, and whose windup, are the caller's"
+
+[dependencies]
+# fixedpoint-nv supplies `FxQ16_16`, which `pidfx` is written in.
+#
+# Taking its type rather than carrying raw `Int`s is the whole point of
+# the second form: a controller written in raw Q16.16 integers is a
+# controller where the shift is somebody's to remember, and the class
+# of bug that produces — a multiply that forgot to shift back down, a
+# gain that is 65536 times too large — is exactly what a fixed-point
+# type exists to stop.  `FxQ16_16` also chose the same container this
+# package needs: 32 bits with a 64-bit intermediate, which is one
+# multiply and one shift on a Cortex-M4.
+#
+# `^0.0.1` pins exactly 0.0.1 under the caret rule, which is what a
+# `0.0.x` range means.  fixedpoint-nv is `core` and makes its own
+# device claim, so `dep-layer` and `core-embedded` both hold.
+fixedpoint-nv = "^0.0.1"

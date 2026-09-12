@@ -1,0 +1,740 @@
+// pidfx.nv — the same controller in Q16.16, for a core with no FPU.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// WHY A SECOND FORM RATHER THAN A GENERIC ONE.  A type cannot carry a
+// numeric parameter here and there is no trait a `@value` arithmetic
+// type can implement that a `@value` struct can be generic over, so
+// one controller over "a number" is not expressible.  Written out by
+// hand is the honest alternative, and it is the same choice
+// fixedpoint-nv itself made for its four Q formats and for the same
+// reason.
+//
+// THE TWO FORMS ARE THE SAME SURFACE, function for function, with
+// `Float` replaced by `FxQ16_16` and `pid` replaced by `pidfx`.  That
+// is deliberate and it is checkable: a caller porting a loop from a
+// Linux service to a Cortex-M0 changes the module name and the number
+// type and nothing else, and a reviewer comparing the two files sees
+// only those two substitutions.
+//
+// WHAT Q16.16 COSTS AND BUYS.  The range is -32768 to 32767.99998 and
+// the step is 2^-16, about 0.0000153, CONSTANT across the whole range —
+// which is the difference from a float, whose step near 1000 is a
+// thousand times its step near 1.  For a control loop that matters in
+// one specific way: a convergence test against `epsilon` means the
+// same thing at every operating point, so a loop that settles at a
+// setpoint of 20 settles the same way at a setpoint of 2000.
+//
+// What it costs is that the gains have to FIT.  `kp` of 40000 is not
+// representable, and a plant that wants one wants its measurement
+// rescaled rather than a wider type.  `check` reports a gain that
+// saturated.
+//
+// SATURATING ARITHMETIC THROUGHOUT.  fixedpoint-nv offers three
+// families — trapping, saturating and wrapping — and this package uses
+// the `sat_` one everywhere.  A control loop that TRAPPED would take
+// the firmware down on a transient; one that WRAPPED would drive an
+// actuator to its opposite extreme, which is worse than either.
+// Saturating is the only one of the three whose failure mode is
+// "the output sat at its limit", which is a thing an operator can see.
+//
+// THE DEVICE THIS IS FOR is in `tests/embedded_probe.nv` and in the
+// README: sensorhub, which reads an nRF52 on-die temperature in units
+// of a quarter degree every two seconds and has nothing to close a
+// loop with.
+
+use fxq16_16
+use pid
+
+// ── Gains and limits ─────────────────────────────────────────────────
+
+// The three gains, in Q16.16.
+//
+// PARALLEL FORM, the same as `pid.PidGains` — the output is
+// `kp*e + ki*∫e + kd*de/dt` — so a gain set converts between the two
+// forms by `fxq16_16.from_float` and nothing else.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     let g = pidfx.gains(fxq16_16.from_int(2), fxq16_16.zero(), fxq16_16.zero())
+//     println("${fxq16_16.raw(pidfx.kp(g))}")      // 131072
+// ```
+pub @value
+struct PidFxGains
+    // Proportional gain.
+    kp: FxQ16_16
+    // Integral gain, per second.
+    ki: FxQ16_16
+    // Derivative gain, per second.
+    kd: FxQ16_16
+
+// What the output is allowed to be, in Q16.16.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     let l = pidfx.limits(fxq16_16.zero(), fxq16_16.from_int(100))
+//     println("${fxq16_16.raw(pidfx.limit_high(l))}")
+// ```
+pub @value
+struct PidFxLimits
+    // The lowest output the actuator accepts.
+    lo: FxQ16_16
+    // The highest.
+    hi: FxQ16_16
+
+// The three gains.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     let g = pidfx.gains(fxq16_16.one(), fxq16_16.zero(), fxq16_16.zero())
+//     println("${fxq16_16.raw(pidfx.kp(g))}")      // 65536
+// ```
+pub fn gains(kp: FxQ16_16, ki: FxQ16_16, kd: FxQ16_16) -> PidFxGains []
+    todo("pid-nv.pidfx.gains")
+
+// The proportional gain.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     println("${fxq16_16.raw(pidfx.kp(pidfx.gains(fxq16_16.one(), fxq16_16.zero(), fxq16_16.zero())))}")
+// ```
+pub fn kp(g: PidFxGains) -> FxQ16_16 []
+    todo("pid-nv.pidfx.kp")
+
+// The integral gain.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     println("${fxq16_16.raw(pidfx.ki(pidfx.gains(fxq16_16.zero(), fxq16_16.one(), fxq16_16.zero())))}")
+// ```
+pub fn ki(g: PidFxGains) -> FxQ16_16 []
+    todo("pid-nv.pidfx.ki")
+
+// The derivative gain.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     println("${fxq16_16.raw(pidfx.kd(pidfx.gains(fxq16_16.zero(), fxq16_16.zero(), fxq16_16.one())))}")
+// ```
+pub fn kd(g: PidFxGains) -> FxQ16_16 []
+    todo("pid-nv.pidfx.kd")
+
+// The output range.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     println("${fxq16_16.raw(pidfx.limit_low(pidfx.limits(fxq16_16.zero(), fxq16_16.one())))}")
+// ```
+pub fn limits(lo: FxQ16_16, hi: FxQ16_16) -> PidFxLimits []
+    todo("pid-nv.pidfx.limits")
+
+// The low limit.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     println("${fxq16_16.raw(pidfx.limit_low(pidfx.limits(fxq16_16.zero(), fxq16_16.one())))}")
+// ```
+pub fn limit_low(l: PidFxLimits) -> FxQ16_16 []
+    todo("pid-nv.pidfx.limit_low")
+
+// The high limit.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     println("${fxq16_16.raw(pidfx.limit_high(pidfx.limits(fxq16_16.zero(), fxq16_16.one())))}")
+// ```
+pub fn limit_high(l: PidFxLimits) -> FxQ16_16 []
+    todo("pid-nv.pidfx.limit_high")
+
+// ── The controller ───────────────────────────────────────────────────
+
+// A PID controller in flight, in Q16.16.
+//
+// `pid.PidF`'s eighteen fields with `Float` replaced by `FxQ16_16`,
+// which is a 32-bit integer in a `@value` — so the state is about
+// eighty bytes in the caller's frame and a device holding three of
+// them holds them in `.bss`.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     let p = pidfx.controller(
+//                 pidfx.gains(fxq16_16.from_int(2), fxq16_16.zero(), fxq16_16.zero()),
+//                 pidfx.limits(fxq16_16.zero(), fxq16_16.from_int(100)),
+//                 fxq16_16.from_int(21))
+//     println("${fxq16_16.raw(pidfx.output(p))}")  // 0
+// ```
+pub @value
+struct PidFx
+    // The three gains.
+    gains: PidFxGains
+    // What the output may be.
+    limits: PidFxLimits
+    // What the measurement is being driven towards.
+    setpoint: FxQ16_16
+    // The accumulated integral of the error, in error-units × seconds,
+    // BEFORE `ki` is applied.
+    integral: FxQ16_16
+    // The measurement the previous step saw.
+    prev_measurement: FxQ16_16
+    // The error the previous step saw.
+    prev_error: FxQ16_16
+    // The filtered derivative carried between steps.
+    d_state: FxQ16_16
+    // The derivative low-pass time constant, in seconds.
+    tau: FxQ16_16
+    // The back-calculation gain.
+    kt: FxQ16_16
+    // The largest `dt` a single step will act on, in seconds.
+    dt_max: FxQ16_16
+    // The output the last `step` produced, within the limits.
+    output: FxQ16_16
+    // The proportional term of the last output.
+    p_term: FxQ16_16
+    // The integral term of the last output.
+    i_term: FxQ16_16
+    // The derivative term of the last output.
+    d_term: FxQ16_16
+    // The anti-windup policy, as `pid.PID_WINDUP_*`.
+    windup: Int
+    // The derivative source, as `pid.PID_DERIV_*`.
+    deriv: Int
+    // Whether the previous sample is real.
+    primed: Bool
+    // Whether the last output hit a limit.
+    saturated: Bool
+
+// A controller with the given gains, limits and setpoint.
+//
+// The same defaults as `pid.controller`: clamping anti-windup,
+// derivative on measurement, no filter, a zero back-calculation gain,
+// a `dt` ceiling of one second, a zero integral, and not primed.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     let p = pidfx.controller(
+//                 pidfx.gains(fxq16_16.from_int(2), fxq16_16.zero(), fxq16_16.zero()),
+//                 pidfx.limits(fxq16_16.zero(), fxq16_16.from_int(100)),
+//                 fxq16_16.from_int(21))
+//     println("${fxq16_16.raw(pidfx.setpoint(p))}")
+// ```
+pub fn controller(g: PidFxGains, l: PidFxLimits, setpoint: FxQ16_16) -> PidFx []
+    todo("pid-nv.pidfx.controller")
+
+// A controller built entirely from RAW Q16.16 integers.
+//
+// THE DEVICE CONSTRUCTOR.  A firmware image holds its gains as words
+// in flash — a provisioning step wrote `131072` for a `kp` of 2 — and
+// this is the call that takes them without a float anywhere in the
+// program and without the caller naming fixedpoint-nv's type.  It is
+// also what `tests/embedded_probe.nv` uses, because a probe may name
+// only this package's own types.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     let p = pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256)
+//     println("${fxq16_16.raw(pidfx.setpoint(p))}")   // 1376256
+// ```
+pub fn controller_raw(kp_raw: Int, ki_raw: Int, kd_raw: Int, lo_raw: Int, hi_raw: Int,
+                      setpoint_raw: Int) -> PidFx []
+    todo("pid-nv.pidfx.controller_raw")
+
+// ── One step ─────────────────────────────────────────────────────────
+
+// Advance the controller by `dt` seconds with a new `measurement`.
+//
+// `pid.step`'s six steps, in saturating Q16.16 arithmetic.  Every rule
+// it states holds here: a non-positive `dt` holds, a `dt` above
+// `dt_max` is clamped, the derivative is skipped on the first step
+// after construction or `reset` or `hold`, and the integral is updated
+// after the output clamp.
+//
+// One rule is this form's alone: EVERY OPERATION SATURATES.  A gain
+// and an error whose product exceeds Q16.16's range give the largest
+// representable number rather than a trap or a wrap, and the output is
+// clamped to the limits immediately afterwards — so the visible effect
+// is an actuator at its limit, which is a thing an operator sees and
+// can act on.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     var p = pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256)
+//     p = pidfx.step(p, fxq16_16.from_int(19), fxq16_16.from_float(0.1))
+//     println("${fxq16_16.raw(pidfx.output(p))}")
+// ```
+pub fn step(p: PidFx, measurement: FxQ16_16, dt: FxQ16_16) -> PidFx []
+    todo("pid-nv.pidfx.step")
+
+// Advance the controller with a raw Q16.16 measurement and a raw
+// `dt`.
+//
+// The device path, and what the probe calls: a sensor reading arrives
+// as an integer and there is no reason to build a type around it in
+// firmware that has no float.
+//
+// ```novo
+// use pidfx
+//
+// fn main() [io]
+//     var p = pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256)
+//     p = pidfx.step_raw(p, 1245184, 131072)
+//     println("${pidfx.output_raw(p)}")
+// ```
+pub fn step_raw(p: PidFx, measurement_raw: Int, dt_raw: Int) -> PidFx []
+    todo("pid-nv.pidfx.step_raw")
+
+// Skip a step: the output stays and the derivative is un-primed.
+//
+// `pid.hold`, and it exists for the same reason — a duty-cycle sensor
+// that sometimes returns nothing must not be stepped with a stale
+// reading.  sensorhub's temperature peripheral answers `NO_READING` on
+// a board with no TEMP unit, and this is what a loop over it calls.
+//
+// ```novo
+// use pidfx
+//
+// fn main() [io]
+//     let p = pidfx.hold(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))
+//     println("${pidfx.is_primed(p)}")             // false
+// ```
+pub fn hold(p: PidFx) -> PidFx []
+    todo("pid-nv.pidfx.hold")
+
+// Clear the integral, the derivative state and the output.
+//
+// ```novo
+// use pidfx
+//
+// fn main() [io]
+//     let p = pidfx.reset(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))
+//     println("${pidfx.integral_raw(p)}")          // 0
+// ```
+pub fn reset(p: PidFx) -> PidFx []
+    todo("pid-nv.pidfx.reset")
+
+// ── Bumpless transfer ────────────────────────────────────────────────
+
+// The controller with new gains, and the integral rewritten so the
+// output does not jump.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     var p = pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256)
+//     p = pidfx.with_gains(p, pidfx.gains(fxq16_16.from_int(4), fxq16_16.zero(), fxq16_16.zero()))
+//     println("${pidfx.output_raw(p)}")            // 0
+// ```
+pub fn with_gains(p: PidFx, g: PidFxGains) -> PidFx []
+    todo("pid-nv.pidfx.with_gains")
+
+// The controller made to agree with an output somebody else chose.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     let p = pidfx.with_manual_output(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256),
+//                                      fxq16_16.from_int(42))
+//     println("${pidfx.output_raw(p)}")            // 2752512
+// ```
+pub fn with_manual_output(p: PidFx, u: FxQ16_16) -> PidFx []
+    todo("pid-nv.pidfx.with_manual_output")
+
+// ── Configuration ────────────────────────────────────────────────────
+
+// The controller with a new setpoint.  The integral is not touched.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     let p = pidfx.with_setpoint(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256),
+//                                 fxq16_16.from_int(23))
+//     println("${pidfx.setpoint_raw(p)}")          // 1507328
+// ```
+pub fn with_setpoint(p: PidFx, setpoint: FxQ16_16) -> PidFx []
+    todo("pid-nv.pidfx.with_setpoint")
+
+// The controller with a new setpoint, as a raw Q16.16 integer.
+//
+// ```novo
+// use pidfx
+//
+// fn main() [io]
+//     let p = pidfx.with_setpoint_raw(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256), 1507328)
+//     println("${pidfx.setpoint_raw(p)}")          // 1507328
+// ```
+pub fn with_setpoint_raw(p: PidFx, setpoint_raw: Int) -> PidFx []
+    todo("pid-nv.pidfx.with_setpoint_raw")
+
+// The controller with new output limits.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     let l = pidfx.limits(fxq16_16.zero(), fxq16_16.from_int(50))
+//     println("${fxq16_16.raw(pidfx.limit_high(pidfx.limits_of(pidfx.with_limits(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256), l))))}")
+// ```
+pub fn with_limits(p: PidFx, l: PidFxLimits) -> PidFx []
+    todo("pid-nv.pidfx.with_limits")
+
+// The controller with an anti-windup policy given as its
+// discriminant.
+//
+// `pid.PID_WINDUP_*`, shared with the `Float` form so a policy travels
+// between them.  An unknown code leaves the policy unchanged; `check`
+// reports it.
+//
+// ```novo
+// use pid
+// use pidfx
+//
+// fn main() [io]
+//     let p = pidfx.with_windup_code(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256),
+//                                    pid.PID_WINDUP_NONE)
+//     println("${pidfx.windup_of(p)}")             // 0
+// ```
+pub fn with_windup_code(p: PidFx, code: Int) -> PidFx []
+    todo("pid-nv.pidfx.with_windup_code")
+
+// The controller with a derivative source given as its discriminant.
+//
+// ```novo
+// use pid
+// use pidfx
+//
+// fn main() [io]
+//     let p = pidfx.with_derivative_code(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256),
+//                                        pid.PID_DERIV_ON_ERROR)
+//     println("${pidfx.deriv_of(p)}")              // 0
+// ```
+pub fn with_derivative_code(p: PidFx, code: Int) -> PidFx []
+    todo("pid-nv.pidfx.with_derivative_code")
+
+// The controller with a first-order low-pass on the derivative.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     let p = pidfx.with_derivative_filter(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256),
+//                                          fxq16_16.from_float(0.01))
+//     println("${fxq16_16.raw(pidfx.filter_tau(p))}")
+// ```
+pub fn with_derivative_filter(p: PidFx, tau: FxQ16_16) -> PidFx []
+    todo("pid-nv.pidfx.with_derivative_filter")
+
+// The controller with a back-calculation gain.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     let p = pidfx.with_back_calculation(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256),
+//                                         fxq16_16.one())
+//     println("${fxq16_16.raw(pidfx.back_calculation_gain(p))}")   // 65536
+// ```
+pub fn with_back_calculation(p: PidFx, kt: FxQ16_16) -> PidFx []
+    todo("pid-nv.pidfx.with_back_calculation")
+
+// The controller with a `dt` ceiling, in seconds.
+//
+// A device with a two-second duty cycle sets four here, which is what
+// sensorhub would do.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     let p = pidfx.with_max_dt(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256),
+//                               fxq16_16.from_int(4))
+//     println("${fxq16_16.raw(pidfx.max_dt(p))}")  // 262144
+// ```
+pub fn with_max_dt(p: PidFx, dt_max: FxQ16_16) -> PidFx []
+    todo("pid-nv.pidfx.with_max_dt")
+
+// ── Reading a controller ─────────────────────────────────────────────
+
+// The output the last step produced.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     println("${fxq16_16.raw(pidfx.output(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256)))}")
+// ```
+pub fn output(p: PidFx) -> FxQ16_16 []
+    todo("pid-nv.pidfx.output")
+
+// The output as a raw Q16.16 integer.
+//
+// What a device hands to a PWM register: the duty cycle is already an
+// integer and there is no reason to unwrap a type to get it.
+//
+// ```novo
+// use pidfx
+//
+// fn main() [io]
+//     println("${pidfx.output_raw(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")   // 0
+// ```
+pub fn output_raw(p: PidFx) -> Int []
+    todo("pid-nv.pidfx.output_raw")
+
+// The proportional term of the last output, raw.
+//
+// ```novo
+// use pidfx
+//
+// fn main() [io]
+//     println("${pidfx.p_term_raw(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")
+// ```
+pub fn p_term_raw(p: PidFx) -> Int []
+    todo("pid-nv.pidfx.p_term_raw")
+
+// The integral term of the last output, raw.
+//
+// ```novo
+// use pidfx
+//
+// fn main() [io]
+//     println("${pidfx.i_term_raw(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")
+// ```
+pub fn i_term_raw(p: PidFx) -> Int []
+    todo("pid-nv.pidfx.i_term_raw")
+
+// The derivative term of the last output, raw.
+//
+// ```novo
+// use pidfx
+//
+// fn main() [io]
+//     println("${pidfx.d_term_raw(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")
+// ```
+pub fn d_term_raw(p: PidFx) -> Int []
+    todo("pid-nv.pidfx.d_term_raw")
+
+// The accumulated integral, raw, before `ki`.
+//
+// ```novo
+// use pidfx
+//
+// fn main() [io]
+//     println("${pidfx.integral_raw(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")
+// ```
+pub fn integral_raw(p: PidFx) -> Int []
+    todo("pid-nv.pidfx.integral_raw")
+
+// The error the last step saw, raw.
+//
+// ```novo
+// use pidfx
+//
+// fn main() [io]
+//     println("${pidfx.error_raw(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")
+// ```
+pub fn error_raw(p: PidFx) -> Int []
+    todo("pid-nv.pidfx.error_raw")
+
+// The setpoint.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     println("${fxq16_16.raw(pidfx.setpoint(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256)))}")
+// ```
+pub fn setpoint(p: PidFx) -> FxQ16_16 []
+    todo("pid-nv.pidfx.setpoint")
+
+// The setpoint, raw.
+//
+// ```novo
+// use pidfx
+//
+// fn main() [io]
+//     println("${pidfx.setpoint_raw(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")
+// ```
+pub fn setpoint_raw(p: PidFx) -> Int []
+    todo("pid-nv.pidfx.setpoint_raw")
+
+// The gains.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     println("${fxq16_16.raw(pidfx.kp(pidfx.gains_of(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))))}")
+// ```
+pub fn gains_of(p: PidFx) -> PidFxGains []
+    todo("pid-nv.pidfx.gains_of")
+
+// The output limits.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     println("${fxq16_16.raw(pidfx.limit_high(pidfx.limits_of(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))))}")
+// ```
+pub fn limits_of(p: PidFx) -> PidFxLimits []
+    todo("pid-nv.pidfx.limits_of")
+
+// The anti-windup policy's discriminant.
+//
+// ```novo
+// use pidfx
+//
+// fn main() [io]
+//     println("${pidfx.windup_of(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")   // 1
+// ```
+pub fn windup_of(p: PidFx) -> Int []
+    todo("pid-nv.pidfx.windup_of")
+
+// The derivative source's discriminant.
+//
+// ```novo
+// use pidfx
+//
+// fn main() [io]
+//     println("${pidfx.deriv_of(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")    // 1
+// ```
+pub fn deriv_of(p: PidFx) -> Int []
+    todo("pid-nv.pidfx.deriv_of")
+
+// The derivative filter's time constant.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     println("${fxq16_16.raw(pidfx.filter_tau(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256)))}")
+// ```
+pub fn filter_tau(p: PidFx) -> FxQ16_16 []
+    todo("pid-nv.pidfx.filter_tau")
+
+// The back-calculation gain.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     println("${fxq16_16.raw(pidfx.back_calculation_gain(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256)))}")
+// ```
+pub fn back_calculation_gain(p: PidFx) -> FxQ16_16 []
+    todo("pid-nv.pidfx.back_calculation_gain")
+
+// The `dt` ceiling.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     println("${fxq16_16.raw(pidfx.max_dt(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256)))}")
+// ```
+pub fn max_dt(p: PidFx) -> FxQ16_16 []
+    todo("pid-nv.pidfx.max_dt")
+
+// Whether the last output hit a limit.
+//
+// ```novo
+// use pidfx
+//
+// fn main() [io]
+//     println("${pidfx.is_saturated(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")
+// ```
+pub fn is_saturated(p: PidFx) -> Bool []
+    todo("pid-nv.pidfx.is_saturated")
+
+// Whether the controller holds a previous sample.
+//
+// ```novo
+// use pidfx
+//
+// fn main() [io]
+//     println("${pidfx.is_primed(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")   // false
+// ```
+pub fn is_primed(p: PidFx) -> Bool []
+    todo("pid-nv.pidfx.is_primed")
+
+// ── Checking ─────────────────────────────────────────────────────────
+
+// `None` if the controller's configuration is usable, the refusal if
+// it is not.
+//
+// The same checks `pid.check` makes, plus the one this form has of its
+// own: a gain, a limit or a setpoint that SATURATED on the way in.
+// `fxq16_16.from_float(40000.0)` is `32767.99998` and no error, which
+// is the right behaviour for a `@value` constructor and the wrong
+// thing to discover from a control loop's behaviour — so it is
+// reported here, where a person is looking.
+//
+// ```novo
+// use fxq16_16
+// use pidfx
+//
+// fn main() [io]
+//     let bad = pidfx.controller(
+//                   pidfx.gains(fxq16_16.from_int(2), fxq16_16.zero(), fxq16_16.zero()),
+//                   pidfx.limits(fxq16_16.from_int(100), fxq16_16.zero()),
+//                   fxq16_16.from_int(21))
+//     match pidfx.check(bad)
+//         Some(_) => println("the limits are the wrong way round")
+//         None    => println("usable")
+// ```
+pub fn check(p: PidFx) -> ?PidError []
+    todo("pid-nv.pidfx.check")

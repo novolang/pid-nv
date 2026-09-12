@@ -1,0 +1,451 @@
+// pidtune.nv — relay auto-tuning: the Åström–Hägglund experiment, and
+// the rules that turn its answer into gains.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// A SEPARATE MODULE WITH ITS OWN STATE, on purpose.  A tuner is not a
+// controller: it drives the plant with a SQUARE WAVE rather than a
+// proportional signal, it produces no setpoint tracking at all, and a
+// program running it has taken the loop out of service for a few
+// minutes.  Folding it into `PidF` would put a mode flag in the hot
+// path of every step and make "is this loop controlling or
+// experimenting" a thing a reader has to work out.
+//
+// WHAT THE EXPERIMENT IS.  Åström and Hägglund, 1984.  Replace the
+// controller with a relay: drive the actuator to `+amplitude` while
+// the measurement is below the setpoint and to `-amplitude` while it
+// is above.  A plant with any lag oscillates, and the oscillation's
+// PERIOD is the plant's ultimate period `Tu` while its AMPLITUDE gives
+// the ultimate gain
+//
+//     Ku = 4 * amplitude / (pi * peak_to_peak / 2)
+//
+// — the describing-function approximation, which is what makes the
+// method work with one experiment instead of the gain-ramping that
+// Ziegler and Nichols originally required and that drives real plants
+// to the edge of instability on purpose.
+//
+// THE HYSTERESIS IS NOT OPTIONAL ON A REAL SENSOR.  A relay with no
+// hysteresis switches on every noise sample that crosses the setpoint,
+// which is a chattering actuator and a period measurement of nonsense.
+// `hysteresis` is a band around the setpoint the measurement must
+// leave before the relay flips, and it should be a few times the
+// sensor's noise amplitude.  It costs accuracy — the estimated `Ku`
+// comes out low — which is the trade the method is built on and which
+// the README states rather than hiding.
+//
+// THE CLOCK IS THE CALLER'S HERE TOO: `relay_step` takes the elapsed
+// seconds, so a tuning run replays from a log exactly as a control run
+// does.
+//
+// WHAT THIS WILL NOT DO: decide when the experiment is finished, stop
+// it, or apply the result.  `relay_cycles` and `relay_settled` are the
+// facts; the decision is the caller's, because "four cycles whose
+// periods agree within five per cent" is a judgement about a
+// particular plant and not a constant.
+
+use pid
+
+// ── The tuning rules ─────────────────────────────────────────────────
+
+// Ziegler–Nichols, classic PID: `kp = 0.6*Ku`, `Ti = Tu/2`,
+// `Td = Tu/8`.
+//
+// The one every textbook prints.  It is AGGRESSIVE — roughly a quarter
+// amplitude decay ratio, which means a visible overshoot and two or
+// three oscillations before it settles — and it is the wrong default
+// for anything a person watches or anything that can be damaged by
+// overshooting.  It is here because it is the reference every other
+// rule is described against.
+pub const PID_RULE_ZN_CLASSIC = 0
+
+// Ziegler–Nichols PI: `kp = 0.45*Ku`, `Ti = Tu/1.2`, no derivative.
+//
+// For a loop whose measurement is too noisy for a derivative at all —
+// a flow, a pressure, a current — which in practice is most of them.
+pub const PID_RULE_ZN_PI = 1
+
+// Tyreus–Luyben: `kp = 0.45*Ku`, `Ti = 2.2*Tu`, `Td = Tu/6.3`.
+//
+// Much more conservative than Ziegler–Nichols and the better default
+// for a real plant: slower to reach the setpoint, far less overshoot,
+// and much more tolerant of the plant changing underneath it, which it
+// will.
+pub const PID_RULE_TYREUS_LUYBEN = 2
+
+// Pessen Integral: `kp = 0.7*Ku`, `Ti = Tu/2.5`, `Td = 3*Tu/20`.
+//
+// Faster than classic Ziegler–Nichols with a similar overshoot.  For a
+// loop where settling time is what matters and overshoot is cheap.
+pub const PID_RULE_PESSEN = 3
+
+// No overshoot: `kp = 0.2*Ku`, `Ti = Tu/2`, `Td = Tu/3`.
+//
+// The one to reach for when overshooting is not allowed at all — a
+// temperature that would damage a sample, a position that would hit a
+// stop.  It is slow, and that is the whole point.
+pub const PID_RULE_NO_OVERSHOOT = 4
+
+// Which rule turns an ultimate gain and period into gains.
+//
+// The four arms are real tuning tables with real trade-offs, and the
+// doc comment on each constant says which loop wants it.  A caller
+// that does not know should read `PID_RULE_TYREUS_LUYBEN`'s.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     println("${pidtune.rule_code(PidTyreusLuyben)}")   // 2
+// ```
+pub enum PidTuneRule
+    // Aggressive, quarter-decay.  The textbook reference.
+    PidZieglerNicholsClassic
+    // PI only, for a measurement too noisy to differentiate.
+    PidZieglerNicholsPi
+    // Conservative, and the better default for a real plant.
+    PidTyreusLuyben
+    // Fast, with a similar overshoot to classic.
+    PidPessenIntegral
+    // Slow, and no overshoot at all.
+    PidNoOvershoot
+
+// The discriminant a rule is spelled as.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     println("${pidtune.rule_code(PidNoOvershoot)}")    // 4
+// ```
+pub fn rule_code(r: PidTuneRule) -> Int []
+    todo("pid-nv.pidtune.rule_code")
+
+// The rule a discriminant names, or `None`.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     match pidtune.rule_of_code(2)
+//         Some(_) => println("Tyreus-Luyben")
+//         None    => println("no such rule")
+// ```
+pub fn rule_of_code(code: Int) -> ?PidTuneRule []
+    todo("pid-nv.pidtune.rule_of_code")
+
+// ── What the experiment found ────────────────────────────────────────
+
+// The ultimate gain and the ultimate period a relay experiment
+// measured.
+//
+// A `@value` of two numbers.  Its own type because these two are what
+// a tuning rule consumes, and because they are worth keeping: a plant's
+// `Ku` and `Tu` change slowly, so a program that stores them can
+// re-tune with a different rule without running the experiment again.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     println("${pidtune.ultimate_period(pidtune.ultimate(2.5, 30.0))}")   // 30
+// ```
+pub @value
+struct PidUltimate
+    // The ultimate gain: the proportional gain at which the loop would
+    // oscillate with a constant amplitude.
+    ku: Float
+    // The ultimate period, in seconds: how long one of those
+    // oscillations takes.
+    tu: Float
+
+// An ultimate gain and period, for a caller that measured them
+// elsewhere or stored them from a previous run.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     println("${pidtune.ultimate_gain(pidtune.ultimate(2.5, 30.0))}")     // 2.5
+// ```
+pub fn ultimate(ku: Float, tu: Float) -> PidUltimate []
+    todo("pid-nv.pidtune.ultimate")
+
+// The ultimate gain.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     println("${pidtune.ultimate_gain(pidtune.ultimate(2.0, 10.0))}")     // 2
+// ```
+pub fn ultimate_gain(u: PidUltimate) -> Float []
+    todo("pid-nv.pidtune.ultimate_gain")
+
+// The ultimate period, in seconds.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     println("${pidtune.ultimate_period(pidtune.ultimate(2.0, 10.0))}")   // 10
+// ```
+pub fn ultimate_period(u: PidUltimate) -> Float []
+    todo("pid-nv.pidtune.ultimate_period")
+
+// `None` if `code` is a rule this package has, the refusal if it is
+// not.
+//
+// The check `gains_from` cannot make: `PidGains` is a `@value` struct
+// and a `@value` cannot be a `Result` payload (E2015), so the
+// refusal is its own call.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     match pidtune.check_rule(9)
+//         Some(_) => println("no such rule")
+//         None    => println("a rule this package has")
+// ```
+pub fn check_rule(code: Int) -> ?PidError []
+    todo("pid-nv.pidtune.check_rule")
+
+// The gains a rule produces from an ultimate gain and period.
+//
+// `pid.with_gains` is where they go, which is why an auto-tuner can
+// hand its answer to a running loop without a bump.
+//
+// **A RULE CODE THIS PACKAGE DOES NOT HAVE ANSWERS ZERO GAINS**, and
+// so does a `PidUltimate` whose gain or period is zero.  That is the
+// one safe answer a `@value` function can give — a controller with
+// zero gains does NOTHING, which is what a failed tuning run should
+// produce — and it makes the whole chain safe without a `Result`
+// anywhere in it: a caller that ignored `check_experiment` and
+// `check_rule` ends up with a loop that sits still rather than one
+// that slams an actuator with numbers derived from noise.
+//
+// ```novo
+// use pid
+// use pidtune
+//
+// fn main() [io]
+//     let g = pidtune.gains_from(pidtune.ultimate(2.5, 30.0), pidtune.PID_RULE_TYREUS_LUYBEN)
+//     println("${pid.kp(g)}")
+// ```
+pub fn gains_from(u: PidUltimate, rule_code: Int) -> PidGains []
+    todo("pid-nv.pidtune.gains_from")
+
+// ── The experiment ───────────────────────────────────────────────────
+
+// A relay experiment in flight.
+//
+// A `@value` struct, like everything else here, so the tuner costs a
+// stack frame and no allocation — which matters because the device
+// that most needs auto-tuning is the one nobody can attach a laptop
+// to.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     let r = pidtune.relay(21.0, 50.0, 0.5)
+//     println("${pidtune.relay_cycles(r)}")        // 0
+// ```
+pub @value
+struct PidRelay
+    // The value the measurement is driven around.
+    setpoint: Float
+    // How far the relay drives the actuator either way.
+    amplitude: Float
+    // The band around the setpoint the measurement must leave before
+    // the relay flips.
+    hysteresis: Float
+    // Which way the relay is currently driving: true for high.
+    high: Bool
+    // The elapsed seconds since the experiment started.
+    t: Float
+    // When the relay last flipped from low to high.
+    last_rise: Float
+    // The period the last complete cycle took.
+    period: Float
+    // The period the cycle before that took, so `relay_settled` can
+    // compare two.
+    prev_period: Float
+    // The highest measurement seen in the current cycle.
+    peak_high: Float
+    // The lowest.
+    peak_low: Float
+    // The peak-to-peak amplitude of the last complete cycle.
+    swing: Float
+    // How many complete cycles have finished.
+    cycles: Int
+    // Whether a measurement has been seen at all.
+    primed: Bool
+
+// A relay experiment around `setpoint`, driving `±amplitude`, with a
+// `hysteresis` band.
+//
+// CHOOSING THE THREE NUMBERS is the part a caller has to think about,
+// and the README has the paragraph.  In short: `amplitude` is a few
+// per cent of the actuator's range — enough to move the plant
+// measurably, small enough that the excursion is acceptable — and
+// `hysteresis` is a few times the sensor's noise amplitude.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     println("${pidtune.relay_amplitude(pidtune.relay(21.0, 50.0, 0.5))}")   // 50
+// ```
+pub fn relay(setpoint: Float, amplitude: Float, hysteresis: Float) -> PidRelay []
+    todo("pid-nv.pidtune.relay")
+
+// Advance the experiment by `dt` seconds with a new `measurement`.
+//
+// The same contract `pid.step` has: a non-positive `dt` holds, the
+// state carries its own output, and the clock is the caller's.  What
+// it does is watch for the measurement leaving the hysteresis band,
+// flip the relay when it does, and record the peaks and the period.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     var r = pidtune.relay(21.0, 50.0, 0.5)
+//     r = pidtune.relay_step(r, 19.0, 0.1)
+//     println("${pidtune.relay_output(r)}")
+// ```
+pub fn relay_step(r: PidRelay, measurement: Float, dt: Float) -> PidRelay []
+    todo("pid-nv.pidtune.relay_step")
+
+// What to drive the actuator with right now: `+amplitude` or
+// `-amplitude`.
+//
+// NOT CLAMPED TO ANY LIMIT, because the experiment does not know the
+// actuator's range — the caller chose the amplitude and the caller
+// applies it.  A program running a tuning experiment clamps to its own
+// `PidLimits` on the way out, which is one line and visible.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     println("${pidtune.relay_output(pidtune.relay(21.0, 50.0, 0.5))}")
+// ```
+pub fn relay_output(r: PidRelay) -> Float []
+    todo("pid-nv.pidtune.relay_output")
+
+// How many complete cycles the experiment has seen.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     println("${pidtune.relay_cycles(pidtune.relay(21.0, 50.0, 0.5))}")     // 0
+// ```
+pub fn relay_cycles(r: PidRelay) -> Int []
+    todo("pid-nv.pidtune.relay_cycles")
+
+// The last complete cycle's period, in seconds.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     println("${pidtune.relay_period(pidtune.relay(21.0, 50.0, 0.5))}")     // 0
+// ```
+pub fn relay_period(r: PidRelay) -> Float []
+    todo("pid-nv.pidtune.relay_period")
+
+// The last complete cycle's peak-to-peak amplitude.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     println("${pidtune.relay_swing(pidtune.relay(21.0, 50.0, 0.5))}")      // 0
+// ```
+pub fn relay_swing(r: PidRelay) -> Float []
+    todo("pid-nv.pidtune.relay_swing")
+
+// The relay's amplitude, as given.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     println("${pidtune.relay_amplitude(pidtune.relay(21.0, 50.0, 0.5))}")  // 50
+// ```
+pub fn relay_amplitude(r: PidRelay) -> Float []
+    todo("pid-nv.pidtune.relay_amplitude")
+
+// The elapsed seconds since the experiment started.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     println("${pidtune.relay_elapsed(pidtune.relay(21.0, 50.0, 0.5))}")    // 0
+// ```
+pub fn relay_elapsed(r: PidRelay) -> Float []
+    todo("pid-nv.pidtune.relay_elapsed")
+
+// Whether the last two complete cycles' periods agree within
+// `tolerance`, a fraction.
+//
+// THE FACT, NOT THE DECISION.  "Settled" is what a caller needs to
+// know to decide the experiment is over, and the decision itself —
+// how many cycles, how close, how long to wait before giving up — is a
+// judgement about a particular plant.  A library that decided for you
+// would be wrong on the plant you have.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     println("${pidtune.relay_settled(pidtune.relay(21.0, 50.0, 0.5), 0.05)}")   // false
+// ```
+pub fn relay_settled(r: PidRelay, tolerance: Float) -> Bool []
+    todo("pid-nv.pidtune.relay_settled")
+
+// `None` if the experiment has something to report, the refusal if it
+// has not.
+//
+// `PidTuneNotConverged` before at least two complete cycles, and
+// `PidTuneNoOscillation` when the swing or the period is zero — which
+// means the plant did not respond at all: a stuck actuator, a
+// disconnected sensor, or an amplitude too small to move anything.
+// Both are worth telling apart from a bad tune, because both are
+// hardware and neither is fixed by tuning again.
+//
+// Its own call rather than an error channel on `ultimate_of`, for the
+// reason `check_rule` gives: a `@value` cannot be a `Result` payload.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     match pidtune.check_experiment(pidtune.relay(21.0, 50.0, 0.5))
+//         Some(_) => println("not enough cycles yet")
+//         None    => println("ready to read")
+// ```
+pub fn check_experiment(r: PidRelay) -> ?PidError []
+    todo("pid-nv.pidtune.check_experiment")
+
+// The ultimate gain and period the experiment measured.
+//
+// An experiment that found nothing answers ZERO for both, which
+// `gains_from` turns into zero gains — a controller that does nothing.
+// `check_experiment` is what says WHY, and a caller that wants a
+// message calls it first.
+//
+// ```novo
+// use pidtune
+//
+// fn main() [io]
+//     println("${pidtune.ultimate_gain(pidtune.ultimate_of(pidtune.relay(21.0, 50.0, 0.5)))}")
+// ```
+pub fn ultimate_of(r: PidRelay) -> PidUltimate []
+    todo("pid-nv.pidtune.ultimate_of")

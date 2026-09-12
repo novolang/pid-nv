@@ -1,0 +1,907 @@
+// pid.nv — the controller, in `Float`.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// THE LOAD-BEARING INTERFACE: THE STATE CARRIES ITS OWN OUTPUT.
+//
+// `PidF` is a `@value` struct, and SPEC § 14.5 keeps an unboxed struct
+// out of a `Result`, an optional and a tuple.  So `step` cannot answer
+// `(PidF, Float)`, and there is no version of this package in which it
+// could.  The shape that replaces it is better than the one it could
+// not have:
+//
+//     let p = pid.step(p, measurement, dt)
+//     actuator.drive(pid.output(p))
+//
+// `step` answers ONE value and every question about the step is a
+// reader on it — `output`, `p_term`, `i_term`, `d_term`, `error`,
+// `integral`, `is_saturated`.  An API that returned a bare `Float`
+// would throw all of that away, and those six numbers are exactly the
+// row a person tuning a loop wants in their log.  Getting them back
+// out of a `-> Float` controller means either a second call that
+// recomputes, or fields nobody can reach.
+//
+// THE CLOCK IS THE CALLER'S.  `step(p, y, dt)` takes the elapsed
+// seconds.  That is what keeps this package `core`, and it buys the
+// thing a control library most needs: a replay of a measurement
+// sequence with its dt sequence gives the same outputs on a laptop as
+// on the device, so a loop that misbehaved in the field can be
+// reproduced exactly from a log rather than guessed at.
+//
+// THE POLICIES ARE `Int` FIELDS WITH AN ENUM VOCABULARY AROUND THEM,
+// and that is a consequence rather than a preference: a `@value`
+// struct cannot hold an enum at all — even a payload-free one — because
+// an enum is boxed (E2011), and the compiler's own hint is to spell the
+// choice as a primitive discriminant.  So `PidAntiWindup` and
+// `PidDerivative` are the names a caller reads and writes,
+// `windup_code` and `deriv_code` turn one into the field, and
+// `with_windup` takes the enum so the common path never sees an
+// integer.  `with_windup_code` exists for the device path, where a
+// policy comes out of a configuration word in flash.
+//
+// WHAT IS NOT HERE: a clock, a sensor, an actuator, a task, a timer, a
+// PID "manager" that owns several loops, and any form of output
+// scaling.  A controller is arithmetic over numbers a caller already
+// has, and everything else belongs to the program that runs it.
+
+// ── The policy codes ─────────────────────────────────────────────────
+
+// No anti-windup: the integral accumulates whether or not the output
+// is saturated.
+//
+// Correct only when the output CANNOT saturate, which in practice
+// means never.  It is here because a package that made the right
+// behaviour the only behaviour would be a package a caller could not
+// use to reproduce somebody else's controller.
+pub const PID_WINDUP_NONE = 0
+
+// Clamping: while the output is saturated AND the error would push it
+// further into saturation, the integral does not accumulate.
+//
+// The default, and the one to use when nothing says otherwise.  It
+// needs no tuning constant, it cannot make things worse, and it is
+// what most industrial controllers do.
+pub const PID_WINDUP_CLAMP = 1
+
+// Back-calculation: the integral is fed the difference between the
+// saturated and the unsaturated output, times `kt`.
+//
+// Better than clamping when the actuator saturates often and for long
+// stretches, because it unwinds the integral SMOOTHLY instead of
+// freezing it — the recovery has no corner in it.  The cost is one more
+// number to tune: `kt` is conventionally `1 / sqrt(Ti * Td)`, or `1/Ti`
+// for a PI loop, and `with_back_calculation` is where it goes.
+pub const PID_WINDUP_BACK_CALCULATION = 2
+
+// The derivative is taken on the ERROR: `d(setpoint - y)/dt`.
+//
+// A step change in the setpoint is a step change in the error, so the
+// derivative term spikes — the "derivative kick" that slams an
+// actuator every time an operator types a new target.  It is here
+// because a cascade's inner loop sometimes wants it, and because
+// reproducing an existing controller sometimes requires it.
+pub const PID_DERIV_ON_ERROR = 0
+
+// The derivative is taken on the MEASUREMENT: `-dy/dt`.
+//
+// The default.  The setpoint does not appear in the derivative at all,
+// so changing it produces no kick, and for a constant setpoint the two
+// forms are identical — which is why this one is simply better for
+// almost every loop rather than a trade-off.
+pub const PID_DERIV_ON_MEASUREMENT = 1
+
+// ── The policy vocabularies ──────────────────────────────────────────
+
+// What the controller does with its integral while the output is
+// saturated.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     println("${pid.windup_code(PidWindupClamp)}")   // 1
+// ```
+pub enum PidAntiWindup
+    // The integral accumulates regardless.  See `PID_WINDUP_NONE`.
+    PidWindupNone
+    // The integral stops accumulating in the direction that would make
+    // saturation worse.  The default.
+    PidWindupClamp
+    // The integral is driven back by the saturation error times `kt`.
+    PidWindupBackCalculation
+
+// Whether the derivative sees the error or the measurement.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     println("${pid.deriv_code(PidDerivOnMeasurement)}")   // 1
+// ```
+pub enum PidDerivative
+    // `d(setpoint - y)/dt` — kicks on a setpoint change.
+    PidDerivOnError
+    // `-dy/dt` — the default, and no kick.
+    PidDerivOnMeasurement
+
+// The discriminant a `PidF` stores for an anti-windup policy.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     println("${pid.windup_code(PidWindupBackCalculation)}")   // 2
+// ```
+pub fn windup_code(w: PidAntiWindup) -> Int []
+    todo("pid-nv.pid.windup_code")
+
+// The policy a discriminant names, or `None` for a code this package
+// does not have.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     match pid.windup_of_code(1)
+//         Some(_) => println("clamping")
+//         None    => println("no such policy")
+// ```
+pub fn windup_of_code(code: Int) -> ?PidAntiWindup []
+    todo("pid-nv.pid.windup_of_code")
+
+// The discriminant a `PidF` stores for a derivative source.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     println("${pid.deriv_code(PidDerivOnError)}")   // 0
+// ```
+pub fn deriv_code(d: PidDerivative) -> Int []
+    todo("pid-nv.pid.deriv_code")
+
+// The derivative source a discriminant names, or `None`.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     match pid.deriv_of_code(1)
+//         Some(_) => println("on measurement")
+//         None    => println("no such source")
+// ```
+pub fn deriv_of_code(code: Int) -> ?PidDerivative []
+    todo("pid-nv.pid.deriv_of_code")
+
+// ── Gains and limits ─────────────────────────────────────────────────
+
+// The three gains, as one value.
+//
+// A `@value` struct nested inside `PidF`, so it costs three words in
+// the same frame and no allocation.  Its own type because gains travel
+// together: a tuner produces them, `with_gains` applies them, and a
+// configuration file holds them.
+//
+// PARALLEL FORM, which is the one to state because implementations
+// differ: the output is `kp*e + ki*∫e + kd*de/dt`, so `ki` and `kd`
+// are gains in their own right.  The other convention — `kp*(e +
+// ∫e/Ti + Td*de/dt)`, the "standard" or "ISA" form — puts `kp` in
+// front of everything, so changing `kp` changes all three terms.
+// Converting is `ki = kp/Ti` and `kd = kp*Td`, and a tuning table
+// written for one form gives wrong numbers in the other.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     println("${pid.kp(pid.gains(2.0, 0.5, 0.1))}")   // 2
+// ```
+pub @value
+struct PidGains
+    // Proportional gain, output units per error unit.
+    kp: Float
+    // Integral gain, output units per error unit per second.
+    ki: Float
+    // Derivative gain, output units per error unit per second.
+    kd: Float
+
+// What the output is allowed to be.
+//
+// NOT OPTIONAL.  A controller with no limits is a controller whose
+// integral has nothing to stop it, and every anti-windup policy here
+// is defined in terms of these two numbers.  A caller that genuinely
+// has no actuator limit passes a range wider than the actuator can
+// reach, and says so in a comment.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     println("${pid.limit_high(pid.limits(0.0, 100.0))}")   // 100
+// ```
+pub @value
+struct PidLimits
+    // The lowest output the actuator accepts.
+    lo: Float
+    // The highest.
+    hi: Float
+
+// The three gains.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     println("${pid.ki(pid.gains(2.0, 0.5, 0.1))}")   // 0.5
+// ```
+pub fn gains(kp: Float, ki: Float, kd: Float) -> PidGains []
+    todo("pid-nv.pid.gains")
+
+// The proportional gain.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     println("${pid.kp(pid.gains(1.0, 0.0, 0.0))}")   // 1
+// ```
+pub fn kp(g: PidGains) -> Float []
+    todo("pid-nv.pid.kp")
+
+// The integral gain.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     println("${pid.ki(pid.gains(1.0, 2.0, 0.0))}")   // 2
+// ```
+pub fn ki(g: PidGains) -> Float []
+    todo("pid-nv.pid.ki")
+
+// The derivative gain.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     println("${pid.kd(pid.gains(1.0, 0.0, 3.0))}")   // 3
+// ```
+pub fn kd(g: PidGains) -> Float []
+    todo("pid-nv.pid.kd")
+
+// The output range.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     println("${pid.limit_low(pid.limits(0.0, 100.0))}")    // 0
+// ```
+pub fn limits(lo: Float, hi: Float) -> PidLimits []
+    todo("pid-nv.pid.limits")
+
+// The low limit.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     println("${pid.limit_low(pid.limits(-1.0, 1.0))}")     // -1
+// ```
+pub fn limit_low(l: PidLimits) -> Float []
+    todo("pid-nv.pid.limit_low")
+
+// The high limit.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     println("${pid.limit_high(pid.limits(-1.0, 1.0))}")    // 1
+// ```
+pub fn limit_high(l: PidLimits) -> Float []
+    todo("pid-nv.pid.limit_high")
+
+// ── The controller ───────────────────────────────────────────────────
+
+// A PID controller in flight.
+//
+// A `@value` struct: eighteen fields, about a hundred and forty bytes,
+// in the caller's own frame with no cell, no header and no reference
+// count.  A device holding three of these holds them in `.bss` and
+// allocates nothing per step.
+//
+// EVERY FIELD IS PUBLIC AND DOCUMENTED because a controller that
+// misbehaves is debugged by looking at its state, and a state a person
+// cannot see is a state they guess about.  The accessors below are the
+// spelling to use; the fields are what they read.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.setpoint(p)}")                // 21
+// ```
+pub @value
+struct PidF
+    // The three gains.
+    gains: PidGains
+    // What the output may be.
+    limits: PidLimits
+    // What the measurement is being driven towards.
+    setpoint: Float
+    // The accumulated integral of the error, in error-units × seconds,
+    // BEFORE `ki` is applied — so changing `ki` does not rescale
+    // history and `with_gains` can keep the output where it was.
+    integral: Float
+    // The measurement the previous step saw.  Meaningless while
+    // `primed` is false.
+    prev_measurement: Float
+    // The error the previous step saw, for the derivative-on-error
+    // form.
+    prev_error: Float
+    // The filtered derivative carried between steps.
+    d_state: Float
+    // The derivative low-pass time constant, in seconds.  Zero is no
+    // filter.
+    tau: Float
+    // The back-calculation gain, used only when `windup` is
+    // `PID_WINDUP_BACK_CALCULATION`.
+    kt: Float
+    // The largest `dt` a single step will act on, in seconds.  A
+    // longer one is CLAMPED to this — see `step`.
+    dt_max: Float
+    // The output the last `step` produced, already clamped to the
+    // limits.
+    output: Float
+    // The proportional term of the last output.
+    p_term: Float
+    // The integral term of the last output, `ki` already applied.
+    i_term: Float
+    // The derivative term of the last output, filtered and with `kd`
+    // already applied.
+    d_term: Float
+    // The anti-windup policy, as `PID_WINDUP_*`.
+    windup: Int
+    // The derivative source, as `PID_DERIV_*`.
+    deriv: Int
+    // Whether `prev_measurement` and `prev_error` hold a real sample.
+    // False at construction, after `reset`, and after `hold`, and it
+    // is what stops the FIRST step producing a derivative spike out of
+    // a previous measurement of zero.
+    primed: Bool
+    // Whether the last output hit a limit.
+    saturated: Bool
+
+// A controller with the given gains, limits and setpoint.
+//
+// Defaults: clamping anti-windup, derivative on measurement, no
+// derivative filter, a back-calculation gain of zero, a `dt` ceiling
+// of one second, a zero integral, and not primed.
+//
+// `check` is the validator; this constructor refuses nothing, because
+// a `@value` function has nowhere to put a refusal.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.output(p)}")                  // 0
+// ```
+pub fn controller(g: PidGains, l: PidLimits, setpoint: Float) -> PidF []
+    todo("pid-nv.pid.controller")
+
+// ── One step ─────────────────────────────────────────────────────────
+
+// Advance the controller by `dt` seconds with a new `measurement`.
+//
+// The whole loop, and the only function that changes an output.  What
+// it does, in the order it does it:
+//
+//   1. `error = setpoint - measurement`;
+//   2. the proportional term, `kp * error`;
+//   3. the derivative — on the measurement or on the error, through
+//      the first-order filter if `tau` is non-zero — SKIPPED ENTIRELY
+//      on the first step after construction, `reset` or `hold`,
+//      because there is no previous sample and a derivative computed
+//      against a previous measurement of zero is a spike that reaches
+//      the actuator;
+//   4. the unsaturated output;
+//   5. the clamp to the limits, and `saturated`;
+//   6. the integral, under the anti-windup policy — AFTER the clamp,
+//      which is what makes clamping and back-calculation expressible
+//      at all.
+//
+// `dt` THAT IS NOT POSITIVE HOLDS: the state comes back with its
+// output unchanged and `primed` cleared, exactly as `hold` does.  A
+// controller that divided by a zero `dt` would produce an infinite
+// derivative and slam an actuator, and a `@value` function has no
+// refusal to return, so the safe behaviour is the defined one.
+//
+// `dt` ABOVE `dt_max` IS CLAMPED to `dt_max`.  A missed deadline — a
+// task that was preempted, a device that slept through an interrupt —
+// hands the loop a gap of seconds, and a controller that integrated
+// the whole of it winds up on a transient nobody observed.  The
+// ceiling is a field so a caller with a 10 ms loop can set 50 ms and a
+// caller with a 2 s duty cycle can set 4 s.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     var p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     p = pid.step(p, 19.0, 0.1)
+//     println("${pid.output(p)}")
+// ```
+pub fn step(p: PidF, measurement: Float, dt: Float) -> PidF []
+    todo("pid-nv.pid.step")
+
+// Skip a step: the output stays where it was and the derivative is
+// un-primed.
+//
+// THE FUNCTION A REAL SENSOR NEEDS.  A duty-cycle program whose sensor
+// sometimes returns nothing — a peripheral that did not answer, an I2C
+// NAK, a reading the range check rejected — must not step with a stale
+// measurement: the derivative would see no change where there was one,
+// and the integral would keep integrating an error nobody measured.
+// This is the honest alternative, and un-priming is the important half
+// of it: the NEXT real sample starts the derivative afresh rather than
+// differencing across the gap.
+//
+// The integral is left ALONE rather than reset, because a hold is a
+// missing measurement and not a new experiment — a heater that was
+// 60 % on before the sensor blinked should still be 60 % on after.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     var p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     p = pid.hold(p)
+//     println("${pid.is_primed(p)}")               // false
+// ```
+pub fn hold(p: PidF) -> PidF []
+    todo("pid-nv.pid.hold")
+
+// Clear the integral, the derivative state and the output, keeping the
+// gains, limits, setpoint and policies.
+//
+// What a caller does when the plant changed underneath it: a heater
+// switched off and on, a vehicle that stopped, a batch that ended.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     var p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     p = pid.reset(pid.step(p, 19.0, 0.1))
+//     println("${pid.integral(p)}")                // 0
+// ```
+pub fn reset(p: PidF) -> PidF []
+    todo("pid-nv.pid.reset")
+
+// ── Bumpless transfer ────────────────────────────────────────────────
+
+// The controller with new gains, and the integral rewritten so the
+// OUTPUT DOES NOT JUMP.
+//
+// THE FUNCTION THAT MAKES THIS A CONTROLLER RATHER THAN A FORMULA.
+// Doubling `ki` on a controller with a large integral doubles the
+// integral term, which steps the output by a number nobody asked for —
+// on a heater it is a visible overshoot, on a valve it is a bang.
+// This rewrites the integral so that the same measurement produces the
+// same output as it did an instant before, and the new gains take
+// effect from the NEXT error rather than retroactively over the whole
+// history.
+//
+// `pidtune.gains_from` produces gains and this is where they go, which
+// is why an auto-tuner can hand its answer to a running loop.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     var p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     p = pid.step(p, 19.0, 0.1)
+//     let before = pid.output(p)
+//     p = pid.with_gains(p, pid.gains(4.0, 1.0, 0.2))
+//     println("${pid.output(p) == before}")        // true
+// ```
+pub fn with_gains(p: PidF, g: PidGains) -> PidF []
+    todo("pid-nv.pid.with_gains")
+
+// The controller made to agree with an output somebody else chose.
+//
+// THE OTHER HALF OF BUMPLESS TRANSFER: manual to automatic.  An
+// operator drives an actuator by hand at 42 %, then switches the loop
+// back on.  Without this the controller's integral is whatever it was
+// when the loop was switched off — usually zero, usually hours ago —
+// and the output steps from 42 % to whatever that produces, which is
+// the jolt every plant operator has seen.
+//
+// This back-computes the integral so that the controller's output IS
+// `u` at the current measurement, and the loop then moves away from it
+// smoothly.  `u` outside the limits is clamped first.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     var p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     p = pid.with_manual_output(p, 42.0)
+//     println("${pid.output(p)}")                  // 42
+// ```
+pub fn with_manual_output(p: PidF, u: Float) -> PidF []
+    todo("pid-nv.pid.with_manual_output")
+
+// ── Configuration ────────────────────────────────────────────────────
+
+// The controller with a new setpoint.
+//
+// The integral is NOT touched.  A setpoint change is an intentional
+// step and the loop is supposed to respond to it; rewriting the
+// integral here would be the controller deciding it had already done
+// half the work.  The derivative kick a setpoint change would cause is
+// handled by the default derivative source, not by this function.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.setpoint(pid.with_setpoint(p, 23.0))}")   // 23
+// ```
+pub fn with_setpoint(p: PidF, setpoint: Float) -> PidF []
+    todo("pid-nv.pid.with_setpoint")
+
+// The controller with new output limits.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.limit_high(pid.limits_of(pid.with_limits(p, pid.limits(0.0, 50.0))))}")
+// ```
+pub fn with_limits(p: PidF, l: PidLimits) -> PidF []
+    todo("pid-nv.pid.with_limits")
+
+// The controller with an anti-windup policy.
+//
+// The spelling for a host, which has the enum.  `with_windup_code` is
+// the device path.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.windup_of(pid.with_windup(p, PidWindupNone))}")   // 0
+// ```
+pub fn with_windup(p: PidF, w: PidAntiWindup) -> PidF []
+    todo("pid-nv.pid.with_windup")
+
+// The controller with an anti-windup policy given as its
+// discriminant.
+//
+// For firmware whose policy comes out of a configuration word in
+// flash, where there is no enum to build.  A code this package does
+// not have leaves the policy UNCHANGED rather than trapping; `check`
+// is what reports it, because a `@value` function has no refusal to
+// return.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.windup_of(pid.with_windup_code(p, pid.PID_WINDUP_BACK_CALCULATION))}")
+// ```
+pub fn with_windup_code(p: PidF, code: Int) -> PidF []
+    todo("pid-nv.pid.with_windup_code")
+
+// The controller with a derivative source.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.deriv_of(pid.with_derivative(p, PidDerivOnError))}")   // 0
+// ```
+pub fn with_derivative(p: PidF, d: PidDerivative) -> PidF []
+    todo("pid-nv.pid.with_derivative")
+
+// The controller with a derivative source given as its discriminant.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.deriv_of(pid.with_derivative_code(p, pid.PID_DERIV_ON_ERROR))}")
+// ```
+pub fn with_derivative_code(p: PidF, code: Int) -> PidF []
+    todo("pid-nv.pid.with_derivative_code")
+
+// The controller with a first-order low-pass on the derivative, time
+// constant `tau` seconds.  Zero switches it off.
+//
+// WHY A DERIVATIVE NEEDS A FILTER AT ALL: differentiating amplifies
+// high-frequency noise by the frequency, so a 12-bit ADC's last bit
+// rattling at the sample rate becomes the largest term in the output.
+// An unfiltered derivative on a real sensor is the reason so many
+// deployed loops run with `kd = 0`.
+//
+// `tau` is conventionally `kd / (kp * N)` with `N` between 8 and 20 —
+// `N` being how many times faster than the derivative action the
+// filter is allowed to be.  A larger `tau` is quieter and slower.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.filter_tau(pid.with_derivative_filter(p, 0.01))}")   // 0.01
+// ```
+pub fn with_derivative_filter(p: PidF, tau: Float) -> PidF []
+    todo("pid-nv.pid.with_derivative_filter")
+
+// The controller with a back-calculation gain.
+//
+// Only used when the anti-windup policy is
+// `PidWindupBackCalculation`; setting it does not select that policy,
+// because a caller that set a number and got a behaviour change they
+// did not ask for would be right to be annoyed.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.back_calculation_gain(pid.with_back_calculation(p, 1.0))}")   // 1
+// ```
+pub fn with_back_calculation(p: PidF, kt: Float) -> PidF []
+    todo("pid-nv.pid.with_back_calculation")
+
+// The controller with a `dt` ceiling, in seconds.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.max_dt(pid.with_max_dt(p, 4.0))}")   // 4
+// ```
+pub fn with_max_dt(p: PidF, dt_max: Float) -> PidF []
+    todo("pid-nv.pid.with_max_dt")
+
+// ── Reading a controller ─────────────────────────────────────────────
+
+// The output the last `step` produced, already within the limits.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.output(p)}")                  // 0
+// ```
+pub fn output(p: PidF) -> Float []
+    todo("pid-nv.pid.output")
+
+// The proportional term of the last output.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.step(pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0), 19.0, 0.1)
+//     println("${pid.p_term(p)}")
+// ```
+pub fn p_term(p: PidF) -> Float []
+    todo("pid-nv.pid.p_term")
+
+// The integral term of the last output, `ki` already applied.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.step(pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0), 19.0, 0.1)
+//     println("${pid.i_term(p)}")
+// ```
+pub fn i_term(p: PidF) -> Float []
+    todo("pid-nv.pid.i_term")
+
+// The derivative term of the last output, filtered and with `kd`
+// already applied.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.step(pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0), 19.0, 0.1)
+//     println("${pid.d_term(p)}")
+// ```
+pub fn d_term(p: PidF) -> Float []
+    todo("pid-nv.pid.d_term")
+
+// The accumulated integral, BEFORE `ki` — the raw error-seconds.
+//
+// The number a person reads to tell wind-up from a persistent offset,
+// and the one `with_gains` rewrites.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.integral(p)}")                // 0
+// ```
+pub fn integral(p: PidF) -> Float []
+    todo("pid-nv.pid.integral")
+
+// The error the last step saw: `setpoint - measurement`.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.step(pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0), 19.0, 0.1)
+//     println("${pid.error(p)}")                   // 2
+// ```
+pub fn error(p: PidF) -> Float []
+    todo("pid-nv.pid.error")
+
+// The setpoint.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     println("${pid.setpoint(pid.controller(pid.gains(1.0, 0.0, 0.0), pid.limits(0.0, 1.0), 5.0))}")
+// ```
+pub fn setpoint(p: PidF) -> Float []
+    todo("pid-nv.pid.setpoint")
+
+// The gains.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.kp(pid.gains_of(p))}")        // 2
+// ```
+pub fn gains_of(p: PidF) -> PidGains []
+    todo("pid-nv.pid.gains_of")
+
+// The output limits.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.limit_high(pid.limits_of(p))}")   // 100
+// ```
+pub fn limits_of(p: PidF) -> PidLimits []
+    todo("pid-nv.pid.limits_of")
+
+// The anti-windup policy's discriminant.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.windup_of(p)}")               // 1
+// ```
+pub fn windup_of(p: PidF) -> Int []
+    todo("pid-nv.pid.windup_of")
+
+// The derivative source's discriminant.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.deriv_of(p)}")                // 1
+// ```
+pub fn deriv_of(p: PidF) -> Int []
+    todo("pid-nv.pid.deriv_of")
+
+// The derivative filter's time constant, in seconds.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.filter_tau(p)}")              // 0
+// ```
+pub fn filter_tau(p: PidF) -> Float []
+    todo("pid-nv.pid.filter_tau")
+
+// The back-calculation gain.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.back_calculation_gain(p)}")   // 0
+// ```
+pub fn back_calculation_gain(p: PidF) -> Float []
+    todo("pid-nv.pid.back_calculation_gain")
+
+// The `dt` ceiling, in seconds.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.max_dt(p)}")                  // 1
+// ```
+pub fn max_dt(p: PidF) -> Float []
+    todo("pid-nv.pid.max_dt")
+
+// Whether the last output hit a limit.
+//
+// The number a caller logs beside the output, because a loop that has
+// been saturated for ten minutes is a loop with a mechanical problem
+// and not a tuning one.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.is_saturated(p)}")            // false
+// ```
+pub fn is_saturated(p: PidF) -> Bool []
+    todo("pid-nv.pid.is_saturated")
+
+// Whether the controller holds a previous sample, so the next step
+// will compute a derivative.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+//     println("${pid.is_primed(p)}")               // false
+// ```
+pub fn is_primed(p: PidF) -> Bool []
+    todo("pid-nv.pid.is_primed")
+
+// ── Checking ─────────────────────────────────────────────────────────
+
+// `None` if the controller's configuration is usable, the refusal if
+// it is not.
+//
+// CALL IT ONCE, WHERE THE CONTROLLER IS CONFIGURED.  `step` cannot
+// refuse anything — it is a `@value` function with nowhere to put a
+// `Result`, and a loop that matched on one every millisecond is a loop
+// nobody writes correctly — so every argument a caller can get wrong
+// is checked here instead, at the moment a person is looking and the
+// message can name the field.
+//
+// ```novo
+// use pid
+//
+// fn main() [io]
+//     let bad = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(100.0, 0.0), 21.0)
+//     match pid.check(bad)
+//         Some(_) => println("the limits are the wrong way round")
+//         None    => println("usable")
+// ```
+pub fn check(p: PidF) -> ?PidError []
+    todo("pid-nv.pid.check")
