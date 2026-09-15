@@ -5,6 +5,10 @@ All notable changes to pid-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.0.2 — 2026-09-15
+
+README rewritten to the package README style guide (docs/writing-a-readme.md); no change to the interface.
+
 ## 0.0.1 — 2026-09-11
 
 The **interface**: every signature and every effect row, and no bodies.
@@ -51,3 +55,19 @@ The **interface**: every signature and every effect row, and no bodies.
   them.
 - Cascade control, feedforward, gain scheduling and a loop manager are
   deliberately outside.
+
+### Design notes
+
+**The device build does not succeed, and the 0.0.1 entry above is wrong
+about it.**  `tests/embedded_probe.nv` covers both forms, and
+`novo build --target=nrf52-qemu tests/embedded_probe.nv` answers
+seventeen E2011 errors of the form "@value struct `PidFx`: field
+`integral` has type `FxQ16_16` — type `FxQ16_16` is not in the v1
+@value field set".  `FxQ16_16` is a `@value` struct and `novo pkg
+build` accepts every one of those fields; the device build refuses them
+because it resolves no dependencies at all — it loads the local modules
+under `src/` and nothing else, so fixedpoint-nv is absent.  A probe that
+names `fxq16_16` directly fails earlier, with "no module named
+'fxq16_16' in scope (not stdlib, not a local module, not a dep)".  The
+defect is in the toolchain rather than in this package, and the README
+now says the claim rests on the code.
