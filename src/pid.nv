@@ -1,8 +1,5 @@
 // pid.nv — the controller, in `Float`.
 //
-// Every body is a `todo()`.  The signatures are the design, and the
-// compiler checks them as claims; see the README for the stamp.
-//
 // THE LOAD-BEARING INTERFACE: THE STATE CARRIES ITS OWN OUTPUT.
 //
 // `PidF` is a `@value` struct, and SPEC § 14.5 keeps an unboxed struct
@@ -134,7 +131,10 @@ pub enum PidDerivative
 //     println("${pid.windup_code(PidWindupBackCalculation)}")   // 2
 // ```
 pub fn windup_code(w: PidAntiWindup) -> Int []
-    todo("pid-nv.pid.windup_code")
+    match w
+        PidWindupNone            => PID_WINDUP_NONE
+        PidWindupClamp           => PID_WINDUP_CLAMP
+        PidWindupBackCalculation => PID_WINDUP_BACK_CALCULATION
 
 // The policy a discriminant names, or `None` for a code this package
 // does not have.
@@ -148,7 +148,13 @@ pub fn windup_code(w: PidAntiWindup) -> Int []
 //         None    => println("no such policy")
 // ```
 pub fn windup_of_code(code: Int) -> ?PidAntiWindup []
-    todo("pid-nv.pid.windup_of_code")
+    if code == PID_WINDUP_NONE
+        return Some(PidWindupNone)
+    if code == PID_WINDUP_CLAMP
+        return Some(PidWindupClamp)
+    if code == PID_WINDUP_BACK_CALCULATION
+        return Some(PidWindupBackCalculation)
+    None
 
 // The discriminant a `PidF` stores for a derivative source.
 //
@@ -159,7 +165,9 @@ pub fn windup_of_code(code: Int) -> ?PidAntiWindup []
 //     println("${pid.deriv_code(PidDerivOnError)}")   // 0
 // ```
 pub fn deriv_code(d: PidDerivative) -> Int []
-    todo("pid-nv.pid.deriv_code")
+    match d
+        PidDerivOnError       => PID_DERIV_ON_ERROR
+        PidDerivOnMeasurement => PID_DERIV_ON_MEASUREMENT
 
 // The derivative source a discriminant names, or `None`.
 //
@@ -172,7 +180,11 @@ pub fn deriv_code(d: PidDerivative) -> Int []
 //         None    => println("no such source")
 // ```
 pub fn deriv_of_code(code: Int) -> ?PidDerivative []
-    todo("pid-nv.pid.deriv_of_code")
+    if code == PID_DERIV_ON_ERROR
+        return Some(PidDerivOnError)
+    if code == PID_DERIV_ON_MEASUREMENT
+        return Some(PidDerivOnMeasurement)
+    None
 
 // ── Gains and limits ─────────────────────────────────────────────────
 
@@ -236,7 +248,7 @@ struct PidLimits
 //     println("${pid.ki(pid.gains(2.0, 0.5, 0.1))}")   // 0.5
 // ```
 pub fn gains(kp: Float, ki: Float, kd: Float) -> PidGains []
-    todo("pid-nv.pid.gains")
+    PidGains { kp: kp, ki: ki, kd: kd }
 
 // The proportional gain.
 //
@@ -247,7 +259,7 @@ pub fn gains(kp: Float, ki: Float, kd: Float) -> PidGains []
 //     println("${pid.kp(pid.gains(1.0, 0.0, 0.0))}")   // 1
 // ```
 pub fn kp(g: PidGains) -> Float []
-    todo("pid-nv.pid.kp")
+    g.kp
 
 // The integral gain.
 //
@@ -258,7 +270,7 @@ pub fn kp(g: PidGains) -> Float []
 //     println("${pid.ki(pid.gains(1.0, 2.0, 0.0))}")   // 2
 // ```
 pub fn ki(g: PidGains) -> Float []
-    todo("pid-nv.pid.ki")
+    g.ki
 
 // The derivative gain.
 //
@@ -269,7 +281,7 @@ pub fn ki(g: PidGains) -> Float []
 //     println("${pid.kd(pid.gains(1.0, 0.0, 3.0))}")   // 3
 // ```
 pub fn kd(g: PidGains) -> Float []
-    todo("pid-nv.pid.kd")
+    g.kd
 
 // The output range.
 //
@@ -280,7 +292,7 @@ pub fn kd(g: PidGains) -> Float []
 //     println("${pid.limit_low(pid.limits(0.0, 100.0))}")    // 0
 // ```
 pub fn limits(lo: Float, hi: Float) -> PidLimits []
-    todo("pid-nv.pid.limits")
+    PidLimits { lo: lo, hi: hi }
 
 // The low limit.
 //
@@ -291,7 +303,7 @@ pub fn limits(lo: Float, hi: Float) -> PidLimits []
 //     println("${pid.limit_low(pid.limits(-1.0, 1.0))}")     // -1
 // ```
 pub fn limit_low(l: PidLimits) -> Float []
-    todo("pid-nv.pid.limit_low")
+    l.lo
 
 // The high limit.
 //
@@ -302,7 +314,7 @@ pub fn limit_low(l: PidLimits) -> Float []
 //     println("${pid.limit_high(pid.limits(-1.0, 1.0))}")    // 1
 // ```
 pub fn limit_high(l: PidLimits) -> Float []
-    todo("pid-nv.pid.limit_high")
+    l.hi
 
 // ── The controller ───────────────────────────────────────────────────
 
@@ -393,9 +405,22 @@ struct PidF
 //     println("${pid.output(p)}")                  // 0
 // ```
 pub fn controller(g: PidGains, l: PidLimits, setpoint: Float) -> PidF []
-    todo("pid-nv.pid.controller")
+    PidF { gains: g, limits: l, setpoint: setpoint, integral: 0.0,
+           prev_measurement: 0.0, prev_error: 0.0, d_state: 0.0, tau: 0.0,
+           kt: 0.0, dt_max: 1.0, output: 0.0, p_term: 0.0, i_term: 0.0,
+           d_term: 0.0, windup: PID_WINDUP_CLAMP,
+           deriv: PID_DERIV_ON_MEASUREMENT, primed: false, saturated: false }
 
 // ── One step ─────────────────────────────────────────────────────────
+
+// `x` brought inside `l`.  The one place this module's clamp is written
+// down, so `step` and `with_manual_output` cannot disagree about it.
+fn clamp_output(x: Float, l: PidLimits) -> Float
+    if x < l.lo
+        return l.lo
+    if x > l.hi
+        return l.hi
+    x
 
 // Advance the controller by `dt` seconds with a new `measurement`.
 //
@@ -438,7 +463,55 @@ pub fn controller(g: PidGains, l: PidLimits, setpoint: Float) -> PidF []
 //     println("${pid.output(p)}")
 // ```
 pub fn step(p: PidF, measurement: Float, dt: Float) -> PidF []
-    todo("pid-nv.pid.step")
+    if dt <= 0.0
+        return hold(p)
+    var elapsed = dt
+    if elapsed > p.dt_max
+        elapsed = p.dt_max
+    // An unrecognized policy code resolves to clamping, which is the
+    // safe one: a code nobody meant must not switch anti-windup off.
+    let policy = windup_of(p)
+    let err = p.setpoint - measurement
+    let pe = p.gains.kp * err
+    var ds = 0.0
+    if p.primed
+        var raw = 0.0 - (measurement - p.prev_measurement) / elapsed
+        if p.deriv == PID_DERIV_ON_ERROR
+            raw = (err - p.prev_error) / elapsed
+        if p.tau > 0.0
+            let alpha = p.tau / (p.tau + elapsed)
+            ds = alpha * p.d_state + (1.0 - alpha) * raw
+        else
+            ds = raw
+    let de = p.gains.kd * ds
+    // The integral the error asks for, and the output it would produce.
+    // That output is what the policy below decides on; the state that
+    // comes out carries the integral the policy ALLOWED, and every
+    // reported term is recomputed from it so that the output and the
+    // three terms always agree.
+    let gained = p.integral + err * elapsed
+    let probe = pe + p.gains.ki * gained + de
+    let probe_out = clamp_output(probe, p.limits)
+    var acc = gained
+    if policy == PID_WINDUP_CLAMP and probe_out != probe
+        if err > 0.0 and probe_out == p.limits.hi or err < 0.0 and probe_out == p.limits.lo
+            acc = p.integral
+    var it = p.gains.ki * acc
+    var unsat = pe + it + de
+    var out = clamp_output(unsat, p.limits)
+    if policy == PID_WINDUP_BACK_CALCULATION
+        // The integral is fed the difference between the output asked
+        // for and the output the limits allowed.
+        acc = p.integral + (err + p.kt * (probe_out - probe)) * elapsed
+        it = p.gains.ki * acc
+        unsat = pe + it + de
+        out = clamp_output(unsat, p.limits)
+    let sat = out != unsat
+    PidF { gains: p.gains, limits: p.limits, setpoint: p.setpoint, integral: acc,
+           prev_measurement: measurement, prev_error: err, d_state: ds,
+           tau: p.tau, kt: p.kt, dt_max: p.dt_max, output: out, p_term: pe,
+           i_term: it, d_term: de, windup: p.windup, deriv: p.deriv,
+           primed: true, saturated: sat }
 
 // Skip a step: the output stays where it was and the derivative is
 // un-primed.
@@ -465,7 +538,12 @@ pub fn step(p: PidF, measurement: Float, dt: Float) -> PidF []
 //     println("${pid.is_primed(p)}")               // false
 // ```
 pub fn hold(p: PidF) -> PidF []
-    todo("pid-nv.pid.hold")
+    PidF { gains: p.gains, limits: p.limits, setpoint: p.setpoint,
+           integral: p.integral, prev_measurement: p.prev_measurement,
+           prev_error: p.prev_error, d_state: p.d_state, tau: p.tau, kt: p.kt,
+           dt_max: p.dt_max, output: p.output, p_term: p.p_term,
+           i_term: p.i_term, d_term: p.d_term, windup: p.windup,
+           deriv: p.deriv, primed: false, saturated: p.saturated }
 
 // Clear the integral, the derivative state and the output, keeping the
 // gains, limits, setpoint and policies.
@@ -482,7 +560,11 @@ pub fn hold(p: PidF) -> PidF []
 //     println("${pid.integral(p)}")                // 0
 // ```
 pub fn reset(p: PidF) -> PidF []
-    todo("pid-nv.pid.reset")
+    PidF { gains: p.gains, limits: p.limits, setpoint: p.setpoint, integral: 0.0,
+           prev_measurement: 0.0, prev_error: 0.0, d_state: 0.0, tau: p.tau,
+           kt: p.kt, dt_max: p.dt_max, output: 0.0, p_term: 0.0, i_term: 0.0,
+           d_term: 0.0, windup: p.windup, deriv: p.deriv, primed: false,
+           saturated: false }
 
 // ── Bumpless transfer ────────────────────────────────────────────────
 
@@ -512,7 +594,18 @@ pub fn reset(p: PidF) -> PidF []
 //     println("${pid.output(p) == before}")        // true
 // ```
 pub fn with_gains(p: PidF, g: PidGains) -> PidF []
-    todo("pid-nv.pid.with_gains")
+    // The integral TERM is what must not move, so the raw integral is
+    // rescaled by the new gain.  Every other field is carried over, the
+    // reported output included: `with_gains` is not a step.
+    var acc = p.integral
+    if g.ki != 0.0
+        acc = p.i_term / g.ki
+    PidF { gains: g, limits: p.limits, setpoint: p.setpoint, integral: acc,
+           prev_measurement: p.prev_measurement, prev_error: p.prev_error,
+           d_state: p.d_state, tau: p.tau, kt: p.kt, dt_max: p.dt_max,
+           output: p.output, p_term: p.p_term, i_term: p.i_term,
+           d_term: p.d_term, windup: p.windup, deriv: p.deriv,
+           primed: p.primed, saturated: p.saturated }
 
 // The controller made to agree with an output somebody else chose.
 //
@@ -536,7 +629,19 @@ pub fn with_gains(p: PidF, g: PidGains) -> PidF []
 //     println("${pid.output(p)}")                  // 42
 // ```
 pub fn with_manual_output(p: PidF, u: Float) -> PidF []
-    todo("pid-nv.pid.with_manual_output")
+    let u_clamped = clamp_output(u, p.limits)
+    let it = u_clamped - p.p_term - p.d_term
+    // A zero `ki` has no integral that produces this output, so the
+    // history is left where it was rather than scaled by infinity.
+    var acc = p.integral
+    if p.gains.ki != 0.0
+        acc = it / p.gains.ki
+    PidF { gains: p.gains, limits: p.limits, setpoint: p.setpoint, integral: acc,
+           prev_measurement: p.prev_measurement, prev_error: p.prev_error,
+           d_state: p.d_state, tau: p.tau, kt: p.kt, dt_max: p.dt_max,
+           output: u_clamped, p_term: p.p_term, i_term: it, d_term: p.d_term,
+           windup: p.windup, deriv: p.deriv, primed: p.primed,
+           saturated: u_clamped != u }
 
 // ── Configuration ────────────────────────────────────────────────────
 
@@ -556,7 +661,12 @@ pub fn with_manual_output(p: PidF, u: Float) -> PidF []
 //     println("${pid.setpoint(pid.with_setpoint(p, 23.0))}")   // 23
 // ```
 pub fn with_setpoint(p: PidF, setpoint: Float) -> PidF []
-    todo("pid-nv.pid.with_setpoint")
+    PidF { gains: p.gains, limits: p.limits, setpoint: setpoint,
+           integral: p.integral, prev_measurement: p.prev_measurement,
+           prev_error: p.prev_error, d_state: p.d_state, tau: p.tau, kt: p.kt,
+           dt_max: p.dt_max, output: p.output, p_term: p.p_term,
+           i_term: p.i_term, d_term: p.d_term, windup: p.windup,
+           deriv: p.deriv, primed: p.primed, saturated: p.saturated }
 
 // The controller with new output limits.
 //
@@ -568,7 +678,12 @@ pub fn with_setpoint(p: PidF, setpoint: Float) -> PidF []
 //     println("${pid.limit_high(pid.limits_of(pid.with_limits(p, pid.limits(0.0, 50.0))))}")
 // ```
 pub fn with_limits(p: PidF, l: PidLimits) -> PidF []
-    todo("pid-nv.pid.with_limits")
+    PidF { gains: p.gains, limits: l, setpoint: p.setpoint, integral: p.integral,
+           prev_measurement: p.prev_measurement, prev_error: p.prev_error,
+           d_state: p.d_state, tau: p.tau, kt: p.kt, dt_max: p.dt_max,
+           output: p.output, p_term: p.p_term, i_term: p.i_term,
+           d_term: p.d_term, windup: p.windup, deriv: p.deriv,
+           primed: p.primed, saturated: p.saturated }
 
 // The controller with an anti-windup policy.
 //
@@ -583,7 +698,12 @@ pub fn with_limits(p: PidF, l: PidLimits) -> PidF []
 //     println("${pid.windup_of(pid.with_windup(p, PidWindupNone))}")   // 0
 // ```
 pub fn with_windup(p: PidF, w: PidAntiWindup) -> PidF []
-    todo("pid-nv.pid.with_windup")
+    PidF { gains: p.gains, limits: p.limits, setpoint: p.setpoint,
+           integral: p.integral, prev_measurement: p.prev_measurement,
+           prev_error: p.prev_error, d_state: p.d_state, tau: p.tau, kt: p.kt,
+           dt_max: p.dt_max, output: p.output, p_term: p.p_term,
+           i_term: p.i_term, d_term: p.d_term, windup: windup_code(w),
+           deriv: p.deriv, primed: p.primed, saturated: p.saturated }
 
 // The controller with an anti-windup policy given as its
 // discriminant.
@@ -602,7 +722,12 @@ pub fn with_windup(p: PidF, w: PidAntiWindup) -> PidF []
 //     println("${pid.windup_of(pid.with_windup_code(p, pid.PID_WINDUP_BACK_CALCULATION))}")
 // ```
 pub fn with_windup_code(p: PidF, code: Int) -> PidF []
-    todo("pid-nv.pid.with_windup_code")
+    PidF { gains: p.gains, limits: p.limits, setpoint: p.setpoint,
+           integral: p.integral, prev_measurement: p.prev_measurement,
+           prev_error: p.prev_error, d_state: p.d_state, tau: p.tau, kt: p.kt,
+           dt_max: p.dt_max, output: p.output, p_term: p.p_term,
+           i_term: p.i_term, d_term: p.d_term, windup: code, deriv: p.deriv,
+           primed: p.primed, saturated: p.saturated }
 
 // The controller with a derivative source.
 //
@@ -614,7 +739,12 @@ pub fn with_windup_code(p: PidF, code: Int) -> PidF []
 //     println("${pid.deriv_of(pid.with_derivative(p, PidDerivOnError))}")   // 0
 // ```
 pub fn with_derivative(p: PidF, d: PidDerivative) -> PidF []
-    todo("pid-nv.pid.with_derivative")
+    PidF { gains: p.gains, limits: p.limits, setpoint: p.setpoint,
+           integral: p.integral, prev_measurement: p.prev_measurement,
+           prev_error: p.prev_error, d_state: p.d_state, tau: p.tau, kt: p.kt,
+           dt_max: p.dt_max, output: p.output, p_term: p.p_term,
+           i_term: p.i_term, d_term: p.d_term, windup: p.windup,
+           deriv: deriv_code(d), primed: p.primed, saturated: p.saturated }
 
 // The controller with a derivative source given as its discriminant.
 //
@@ -626,7 +756,12 @@ pub fn with_derivative(p: PidF, d: PidDerivative) -> PidF []
 //     println("${pid.deriv_of(pid.with_derivative_code(p, pid.PID_DERIV_ON_ERROR))}")
 // ```
 pub fn with_derivative_code(p: PidF, code: Int) -> PidF []
-    todo("pid-nv.pid.with_derivative_code")
+    PidF { gains: p.gains, limits: p.limits, setpoint: p.setpoint,
+           integral: p.integral, prev_measurement: p.prev_measurement,
+           prev_error: p.prev_error, d_state: p.d_state, tau: p.tau, kt: p.kt,
+           dt_max: p.dt_max, output: p.output, p_term: p.p_term,
+           i_term: p.i_term, d_term: p.d_term, windup: p.windup, deriv: code,
+           primed: p.primed, saturated: p.saturated }
 
 // The controller with a first-order low-pass on the derivative, time
 // constant `tau` seconds.  Zero switches it off.
@@ -649,7 +784,12 @@ pub fn with_derivative_code(p: PidF, code: Int) -> PidF []
 //     println("${pid.filter_tau(pid.with_derivative_filter(p, 0.01))}")   // 0.01
 // ```
 pub fn with_derivative_filter(p: PidF, tau: Float) -> PidF []
-    todo("pid-nv.pid.with_derivative_filter")
+    PidF { gains: p.gains, limits: p.limits, setpoint: p.setpoint,
+           integral: p.integral, prev_measurement: p.prev_measurement,
+           prev_error: p.prev_error, d_state: p.d_state, tau: tau, kt: p.kt,
+           dt_max: p.dt_max, output: p.output, p_term: p.p_term,
+           i_term: p.i_term, d_term: p.d_term, windup: p.windup,
+           deriv: p.deriv, primed: p.primed, saturated: p.saturated }
 
 // The controller with a back-calculation gain.
 //
@@ -666,7 +806,12 @@ pub fn with_derivative_filter(p: PidF, tau: Float) -> PidF []
 //     println("${pid.back_calculation_gain(pid.with_back_calculation(p, 1.0))}")   // 1
 // ```
 pub fn with_back_calculation(p: PidF, kt: Float) -> PidF []
-    todo("pid-nv.pid.with_back_calculation")
+    PidF { gains: p.gains, limits: p.limits, setpoint: p.setpoint,
+           integral: p.integral, prev_measurement: p.prev_measurement,
+           prev_error: p.prev_error, d_state: p.d_state, tau: p.tau, kt: kt,
+           dt_max: p.dt_max, output: p.output, p_term: p.p_term,
+           i_term: p.i_term, d_term: p.d_term, windup: p.windup,
+           deriv: p.deriv, primed: p.primed, saturated: p.saturated }
 
 // The controller with a `dt` ceiling, in seconds.
 //
@@ -678,7 +823,12 @@ pub fn with_back_calculation(p: PidF, kt: Float) -> PidF []
 //     println("${pid.max_dt(pid.with_max_dt(p, 4.0))}")   // 4
 // ```
 pub fn with_max_dt(p: PidF, dt_max: Float) -> PidF []
-    todo("pid-nv.pid.with_max_dt")
+    PidF { gains: p.gains, limits: p.limits, setpoint: p.setpoint,
+           integral: p.integral, prev_measurement: p.prev_measurement,
+           prev_error: p.prev_error, d_state: p.d_state, tau: p.tau, kt: p.kt,
+           dt_max: dt_max, output: p.output, p_term: p.p_term,
+           i_term: p.i_term, d_term: p.d_term, windup: p.windup,
+           deriv: p.deriv, primed: p.primed, saturated: p.saturated }
 
 // ── Reading a controller ─────────────────────────────────────────────
 
@@ -692,7 +842,7 @@ pub fn with_max_dt(p: PidF, dt_max: Float) -> PidF []
 //     println("${pid.output(p)}")                  // 0
 // ```
 pub fn output(p: PidF) -> Float []
-    todo("pid-nv.pid.output")
+    p.output
 
 // The proportional term of the last output.
 //
@@ -704,7 +854,7 @@ pub fn output(p: PidF) -> Float []
 //     println("${pid.p_term(p)}")
 // ```
 pub fn p_term(p: PidF) -> Float []
-    todo("pid-nv.pid.p_term")
+    p.p_term
 
 // The integral term of the last output, `ki` already applied.
 //
@@ -716,7 +866,7 @@ pub fn p_term(p: PidF) -> Float []
 //     println("${pid.i_term(p)}")
 // ```
 pub fn i_term(p: PidF) -> Float []
-    todo("pid-nv.pid.i_term")
+    p.i_term
 
 // The derivative term of the last output, filtered and with `kd`
 // already applied.
@@ -729,7 +879,7 @@ pub fn i_term(p: PidF) -> Float []
 //     println("${pid.d_term(p)}")
 // ```
 pub fn d_term(p: PidF) -> Float []
-    todo("pid-nv.pid.d_term")
+    p.d_term
 
 // The accumulated integral, BEFORE `ki` — the raw error-seconds.
 //
@@ -744,7 +894,7 @@ pub fn d_term(p: PidF) -> Float []
 //     println("${pid.integral(p)}")                // 0
 // ```
 pub fn integral(p: PidF) -> Float []
-    todo("pid-nv.pid.integral")
+    p.integral
 
 // The error the last step saw: `setpoint - measurement`.
 //
@@ -756,7 +906,10 @@ pub fn integral(p: PidF) -> Float []
 //     println("${pid.error(p)}")                   // 2
 // ```
 pub fn error(p: PidF) -> Float []
-    todo("pid-nv.pid.error")
+    // The error the last step saw.  Not recomputed from the setpoint,
+    // because a `with_setpoint` after a step must not make this answer
+    // about a step that never ran.
+    p.prev_error
 
 // The setpoint.
 //
@@ -767,7 +920,7 @@ pub fn error(p: PidF) -> Float []
 //     println("${pid.setpoint(pid.controller(pid.gains(1.0, 0.0, 0.0), pid.limits(0.0, 1.0), 5.0))}")
 // ```
 pub fn setpoint(p: PidF) -> Float []
-    todo("pid-nv.pid.setpoint")
+    p.setpoint
 
 // The gains.
 //
@@ -779,7 +932,7 @@ pub fn setpoint(p: PidF) -> Float []
 //     println("${pid.kp(pid.gains_of(p))}")        // 2
 // ```
 pub fn gains_of(p: PidF) -> PidGains []
-    todo("pid-nv.pid.gains_of")
+    p.gains
 
 // The output limits.
 //
@@ -791,7 +944,7 @@ pub fn gains_of(p: PidF) -> PidGains []
 //     println("${pid.limit_high(pid.limits_of(p))}")   // 100
 // ```
 pub fn limits_of(p: PidF) -> PidLimits []
-    todo("pid-nv.pid.limits_of")
+    p.limits
 
 // The anti-windup policy's discriminant.
 //
@@ -803,7 +956,16 @@ pub fn limits_of(p: PidF) -> PidLimits []
 //     println("${pid.windup_of(p)}")               // 1
 // ```
 pub fn windup_of(p: PidF) -> Int []
-    todo("pid-nv.pid.windup_of")
+    // The policy IN FORCE, which is what every reader of a policy
+    // wants.  A code this package does not have is carried in the field
+    // so that `check` can report it — `with_windup_code` writes down
+    // what it was asked for rather than trapping — and the policy that
+    // code leaves running is the default one.  Clamping, never "off".
+    if p.windup == PID_WINDUP_NONE
+        return PID_WINDUP_NONE
+    if p.windup == PID_WINDUP_BACK_CALCULATION
+        return PID_WINDUP_BACK_CALCULATION
+    PID_WINDUP_CLAMP
 
 // The derivative source's discriminant.
 //
@@ -815,7 +977,12 @@ pub fn windup_of(p: PidF) -> Int []
 //     println("${pid.deriv_of(p)}")                // 1
 // ```
 pub fn deriv_of(p: PidF) -> Int []
-    todo("pid-nv.pid.deriv_of")
+    // The source IN FORCE, and for the reason `windup_of` gives: an
+    // unrecognized code answers the safe default, which for a
+    // derivative is differentiating the measurement and taking no kick.
+    if p.deriv == PID_DERIV_ON_ERROR
+        return PID_DERIV_ON_ERROR
+    PID_DERIV_ON_MEASUREMENT
 
 // The derivative filter's time constant, in seconds.
 //
@@ -827,7 +994,7 @@ pub fn deriv_of(p: PidF) -> Int []
 //     println("${pid.filter_tau(p)}")              // 0
 // ```
 pub fn filter_tau(p: PidF) -> Float []
-    todo("pid-nv.pid.filter_tau")
+    p.tau
 
 // The back-calculation gain.
 //
@@ -839,7 +1006,7 @@ pub fn filter_tau(p: PidF) -> Float []
 //     println("${pid.back_calculation_gain(p)}")   // 0
 // ```
 pub fn back_calculation_gain(p: PidF) -> Float []
-    todo("pid-nv.pid.back_calculation_gain")
+    p.kt
 
 // The `dt` ceiling, in seconds.
 //
@@ -851,7 +1018,7 @@ pub fn back_calculation_gain(p: PidF) -> Float []
 //     println("${pid.max_dt(p)}")                  // 1
 // ```
 pub fn max_dt(p: PidF) -> Float []
-    todo("pid-nv.pid.max_dt")
+    p.dt_max
 
 // Whether the last output hit a limit.
 //
@@ -867,7 +1034,7 @@ pub fn max_dt(p: PidF) -> Float []
 //     println("${pid.is_saturated(p)}")            // false
 // ```
 pub fn is_saturated(p: PidF) -> Bool []
-    todo("pid-nv.pid.is_saturated")
+    p.saturated
 
 // Whether the controller holds a previous sample, so the next step
 // will compute a derivative.
@@ -880,9 +1047,16 @@ pub fn is_saturated(p: PidF) -> Bool []
 //     println("${pid.is_primed(p)}")               // false
 // ```
 pub fn is_primed(p: PidF) -> Bool []
-    todo("pid-nv.pid.is_primed")
+    p.primed
 
 // ── Checking ─────────────────────────────────────────────────────────
+
+// Whether `x` has a value at all: false for a `NaN` and false for
+// either infinity.  A `NaN` compares false against everything, so the
+// one comparison catches all three.  `math.abs` and `math.infinity` are
+// both on the embedded tier where `math.is_inf` is not.
+fn finite(x: Float) -> Bool
+    math.abs(x) < math.infinity()
 
 // `None` if the controller's configuration is usable, the refusal if
 // it is not.
@@ -903,5 +1077,47 @@ pub fn is_primed(p: PidF) -> Bool []
 //         Some(_) => println("the limits are the wrong way round")
 //         None    => println("usable")
 // ```
-pub fn check(p: PidF) -> ?PidError []
-    todo("pid-nv.pid.check")
+pub @tier(app)
+fn check(p: PidF) -> ?PidError []
+    // A number that is not a number first, because every comparison
+    // below would answer false for it and report the wrong field.
+    if not finite(p.limits.lo)
+        return Some(PidNotFinite("limit_low"))
+    if not finite(p.limits.hi)
+        return Some(PidNotFinite("limit_high"))
+    if not finite(p.setpoint)
+        return Some(PidNotFinite("setpoint"))
+    if not finite(p.gains.kp)
+        return Some(PidNotFinite("kp"))
+    if not finite(p.gains.ki)
+        return Some(PidNotFinite("ki"))
+    if not finite(p.gains.kd)
+        return Some(PidNotFinite("kd"))
+    if not finite(p.tau)
+        return Some(PidNotFinite("tau"))
+    if not finite(p.kt)
+        return Some(PidNotFinite("kt"))
+    if not finite(p.dt_max)
+        return Some(PidNotFinite("dt_max"))
+    if p.limits.lo >= p.limits.hi
+        return Some(PidLimitsNotOrdered(p.limits.lo, p.limits.hi))
+    if p.gains.kp < 0.0
+        return Some(PidGainNegative("kp", p.gains.kp))
+    if p.gains.ki < 0.0
+        return Some(PidGainNegative("ki", p.gains.ki))
+    if p.gains.kd < 0.0
+        return Some(PidGainNegative("kd", p.gains.kd))
+    if p.tau < 0.0
+        return Some(PidFilterNegative(p.tau))
+    if p.kt < 0.0
+        return Some(PidBackCalculationGainInvalid(p.kt))
+    if p.windup == PID_WINDUP_BACK_CALCULATION and p.kt == 0.0
+        return Some(PidBackCalculationGainInvalid(p.kt))
+    if p.dt_max <= 0.0
+        return Some(PidMaxDtInvalid(p.dt_max))
+    if p.windup != PID_WINDUP_NONE and p.windup != PID_WINDUP_CLAMP
+        and p.windup != PID_WINDUP_BACK_CALCULATION
+        return Some(PidUnknownPolicyCode("windup", p.windup))
+    if p.deriv != PID_DERIV_ON_ERROR and p.deriv != PID_DERIV_ON_MEASUREMENT
+        return Some(PidUnknownPolicyCode("deriv", p.deriv))
+    None

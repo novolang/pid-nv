@@ -1,15 +1,10 @@
 [package]
 name        = "pid-nv"
-version     = "0.0.2"
-description = "A PID controller as a @value state stepped with a measurement and a dt the caller supplies: gains, setpoint, output limits with clamping or back-calculation anti-windup, derivative on measurement or on error with a first-order filter, bumpless transfer on a gain change and on manual-to-auto, and a dt ceiling for a missed deadline.  Two forms — Float, and fixedpoint-nv's FxQ16_16 for a core with no FPU — and a relay auto-tuner beside them.  Interface only — every body is a todo()."
+version     = "0.1.0"
+description = "A PID controller as a @value state stepped with a measurement and a dt the caller supplies: gains, setpoint, output limits with clamping or back-calculation anti-windup, derivative on measurement or on error with a first-order filter, bumpless transfer on a gain change and on manual-to-auto, and a dt ceiling for a missed deadline.  Two forms — Float, and fixedpoint-nv's FxQ16_16 for a core with no FPU — and a relay auto-tuner beside them."
 license     = "Apache-2.0"
 
-# An INTERFACE release: every `pub fn` body is a `todo()`, so the
-# signatures and the effect rows are published and nothing is
-# implemented.  `novo pkg publish` recognises the shape and requires
-# both the draft stability and the 0.0.x version; the first
-# implementation is the 0.1.0 published over it.
-stability   = "draft"
+stability   = "experimental"
 
 # `core`.  A controller has NO CLOCK: `step` takes the elapsed seconds
 # as an argument, which is what keeps this package `core` and what
@@ -29,7 +24,7 @@ category    = "embedded"
 tags        = ["pid", "control", "controller", "anti-windup", "autotune", "fixed-point", "embedded", "no-alloc"]
 repository  = "https://github.com/novolang/pid-nv"
 maintainers = ["novo-lang"]
-novo        = ">= 0.8.9"
+novo        = ">= 0.20.2"
 
 # A library: no `main`, so `novo pkg build` type-checks and
 # effect-checks every module under `src/` and writes no binary.
@@ -49,7 +44,17 @@ novo        = ">= 0.8.9"
 # package needs: 32 bits with a 64-bit intermediate, which is one
 # multiply and one shift on a Cortex-M4.
 #
-# `^0.0.1` pins exactly 0.0.1 under the caret rule, which is what a
-# `0.0.x` range means.  fixedpoint-nv is `core` and makes its own
-# device claim, so `dep-layer` and `core-embedded` both hold.
-fixedpoint-nv = "^0.0.1"
+# `^0.1.0`: an ordinary caret range, which admits the whole 0.1 line.
+# The range was `^0.0.1` while fixedpoint-nv was an interface release —
+# a `0.0.x` range admits exactly that one release, and 0.0.1's every
+# call panics.  0.1.0 is the implementation.
+#
+# `fixedpoint-nv` is `core` and makes its own device claim, so
+# `dep-layer` and `core-embedded` both hold.
+#
+# The `path` line is DEVELOPMENT WIRING and must go before a publish:
+# 0.1.0 is landed in this checkout and is not on the registry yet, so
+# the range alone resolves to the registry's 0.0.1 stub.  `novo pkg
+# publish` refuses a path dependency — see ../PATH-DEPENDENCIES.md and
+# this package's CHANGELOG.
+fixedpoint-nv = { version = "^0.1.0", path = "../fixedpoint-nv" }

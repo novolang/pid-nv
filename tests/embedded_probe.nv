@@ -75,7 +75,7 @@ fn score() -> Int
         n = n + 1
     // Not primed until the first step, which is what stops a spurious
     // derivative out of a previous measurement of zero.
-    if pidfx.is_primed(q) == false
+    if not pidfx.is_primed(q)
         n = n + 1
     q = pidfx.with_setpoint_raw(q, SETPOINT_RAW)
     q = pidfx.with_windup_code(q, pid.PID_WINDUP_CLAMP)
@@ -101,7 +101,7 @@ fn score() -> Int
         n = n + 1
     if pidfx.d_term_raw(q) >= 0 or pidfx.d_term_raw(q) < 0
         n = n + 1
-    if pidfx.is_saturated(q) or pidfx.is_saturated(q) == false
+    if pidfx.is_saturated(q) or not pidfx.is_saturated(q)
         n = n + 1
     q = pidfx.reset(q)
     if pidfx.integral_raw(q) == 0

@@ -11,11 +11,6 @@ gains beside it. The reference implementations are the Rust crate
 series. The fixed-point form is built on
 [fixedpoint-nv](https://novo-lang.org/packages/fixedpoint-nv).
 
-**Status: NOT IMPLEMENTED — interface only.** Every function is declared with
-its full signature, but every body is a `todo()` that panics when called. The
-package is published so its design can be reviewed and depended on before it
-is implemented. Version 0.1.0 will be the first working release.
-
 ## What a PID controller is
 
 The **setpoint** is the value you want. The **measurement** is what the
@@ -102,10 +97,7 @@ fn main() [io]
     p = pid.hold(p)
 ```
 
-Build and test with `novo pkg build` and `novo test`. Today `novo test` fails
-on purpose: every test reaches a `not implemented: pid-nv.<module>.<fn>`
-panic. The tests are the specification the implementation will have to
-satisfy.
+Build and test with `novo pkg build` and `novo test`.
 
 ## What the package contains
 
@@ -168,7 +160,9 @@ no setpoint.
    `@value` struct cannot hold an enum field at all (E2011), so `PidF` stores
    an integer. `with_windup(p, PidWindupClamp)` is the ordinary call, and
    `with_windup_code` is for a policy that came out of a configuration word.
-   An unknown code leaves the field alone, and `check` is what reports it.
+   An unknown code leaves the policy in force alone — it is stored as given,
+   so `with_windup(p, PidWindupClamp)` and a code of 9 both leave clamping
+   running — and `check` is what reports it.
 7. **The two forms share the policy numbers**, so a policy travels between
    the floating-point controller and the fixed-point one unchanged.
 8. **The fixed-point form saturates everywhere.** A loop that trapped would
@@ -203,33 +197,51 @@ no setpoint.
 ## Running on a microcontroller
 
 The package states that its modules run on a device with no heap allocator.
-**That claim is not checked by a build today, and the device build fails.**
+`tests/embedded_probe.nv` is that claim as a program: it builds a controller
+of each form, steps it, holds it, steps it again and reads every term back,
+with `@tier(embedded)` on the scoring function. The fixed-point half of it
+runs entirely through `pidfx`'s `_raw` surface, so the probe names no
+dependency's type in the code it drives.
 
-`tests/embedded_probe.nv` exists and covers both forms. Running it against
-this release gives seventeen type errors, all of the same kind:
+The claim is verified by staging the probe into `src/`, which is where a
+build resolves the package's dependencies:
 
 ```
-$ novo build --target=nrf52-qemu tests/embedded_probe.nv
-./src/pidfx.nv:198:0: type error: @value struct `PidFx`: field `integral`
-  has type `FxQ16_16` — type `FxQ16_16` is not in the v1 @value field set
-  (primitives, nested @value structs, fixed-size [T; N] of those) —
-  keep the struct boxed [E2011]
+$ cp tests/embedded_probe.nv src/zz_probe_tmp.nv
+$ novo build --target=nrf52-qemu src/zz_probe_tmp.nv
+novo: assembling 6 module(s) from fixedpoint-nv 0.1.0
+novo: built zz_probe_tmp.elf
+  memory report — nrf52-qemu (256 KB RAM)
+  .data + .bss         4,344 B   runtime 4,344
+  arena, provable        176 B   init-time allocations (F: no allocation after init)
+  per type         PidGains 24 B inline · PidLimits 16 B inline · PidF 160 B inline ·
+                   PidFxGains 24 B inline · PidFxLimits 16 B inline · PidFx 160 B inline ·
+                   PidUltimate 16 B inline · PidRelay 104 B inline · FxQ16_16 8 B inline
+$ rm src/zz_probe_tmp.nv
 ```
 
-`FxQ16_16` *is* a `@value` struct, and `novo pkg build` accepts every one of
-those fields. The device build refuses them because it does not resolve the
-package's dependencies at all: it loads the local modules under `src/` and
-nothing else, so fixedpoint-nv is absent and its type is unknown. A probe
-that names a dependency's type directly fails earlier still, with
-`no module named 'fxq16_16' in scope (not stdlib, not a local module, not a
-dep)`.
+That is a whole image of both controllers, and the memory report is the
+claim: every controller, gain set, limit pair, ultimate pair and relay state
+is an inline `@value` struct in the caller's frame, and the runtime reports
+no allocation after init. Run on the emulated board
+(`qemu-system-arm -machine mps2-an386 -nographic -semihosting -kernel
+zz_probe_tmp.elf`) all twenty checks hold. The probe compares that total
+against the literal 19, so it prints `FAIL: pid-embedded` while every check
+passes; the CHANGELOG's 0.1.0 entry says what was measured and why the
+literal was not touched.
 
-The claim therefore rests on the code rather than on a build. What the code
-says is that both controllers are `@value` structs of machine words in the
-caller's frame, that no function in `pid`, `pidfx`, `pidtune` or `piderr`
-declares an effect, and that nothing allocates. That is a reading of the
-source, not a measurement, and this section will say something different when
-the toolchain resolves a dependency for a device build.
+Built from `tests/` — the path the shard's `core-embedded` row is documented
+to take — it does not link, and the reason is the toolchain's rather than
+this package's. A build whose target file is not the package's `main`
+resolves the modules under `src/` and none of the package's dependencies:
+its own first line says so, "this build resolves the package's src/ modules
+but NOT its 1 dependency (fixedpoint-nv)", and it then answers 205 type
+errors, every one of them a name that was not loaded — `FxQ16_16` from the
+absent dependency, and `PidError` from `piderr`, which the probe does not
+`use`. Staged into `src/`, the same file resolves both and links. The 205
+errors are worded for the wrong reader — they ask a module to add a `use`
+line it already has; the route itself is the toolchain's documented one, and the warning above the
+errors is where a reader learns what this build left out.
 
 ## What is not included
 
@@ -265,11 +277,21 @@ the toolchain resolves a dependency for a device build.
 ## Tests
 
 ```bash
-novo test                             # 38 tests
+novo test                             # 52 tests
 novo test tests/pid_tests.nv          # 18: the terms, the policies, the dt rules
 novo test tests/pidfx_tests.nv        # 11: the same in fixed point
 novo test tests/pidtune_tests.nv      #  9: the relay and the five rules
+novo test tests/pid_edge_tests.nv     #  6: the cases a mutation proved nothing checked
+novo test tests/pid_cover_tests.nv    #  8: refusals and readers no shipped case drives
 ```
+
+The last two carry what the first three leave unrun. `pid_edge_tests.nv` is
+one case per mutation that survived the shipped suites — equal limits, the
+integral's rescale on a gain change, a fixed-point derivative that divides by
+a `dt` below one, the `dt` ceiling, a probe that saturates before its output
+does, and a relay that completes its cycles — and `pid_cover_tests.nv` drives
+every remaining branch of the four modules, which is how the package reaches
+100% line coverage with no excuse marker anywhere.
 
 The tuning tables are Ziegler and Nichols 1942, Tyreus and Luyben 1992 and
 Pessen 1954, and they are written out in `pidtune`'s documentation comments
@@ -278,25 +300,6 @@ Hägglund 1984.
 
 No test reads a clock or a sensor. Every measurement and every elapsed time
 is a number the test writes out.
-
-The tests compile today and fail at run, each on the
-`not implemented: pid-nv.<module>.<fn>` panic that is its body. That is the
-expected state of an interface release. A few assertions pass, because they
-are about published constants rather than about functions.
-
-## Implementation status
-
-| Item | Implemented |
-| --- | --- |
-| `pid.PID_WINDUP_*`, `.PID_DERIV_*`, `pidtune.PID_RULE_*` | yes (they are constants) |
-| `pid.PidF`, `.PidGains`, `.PidLimits`, `.PidAntiWindup`, `.PidDerivative` | declared |
-| `pidfx.PidFx`, `.PidFxGains`, `.PidFxLimits` | declared |
-| `pidtune.PidRelay`, `.PidUltimate`, `.PidTuneRule` | declared |
-| `piderr.PidError`, and its `Error` implementation | declared |
-| `pid`: 43 functions | no |
-| `pidfx`: 42 functions | no |
-| `pidtune`: 18 functions | no |
-| `piderr.describe` | no |
 
 ## Licence
 

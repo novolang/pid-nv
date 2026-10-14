@@ -1,9 +1,6 @@
 // pidtune.nv — relay auto-tuning: the Åström–Hägglund experiment, and
 // the rules that turn its answer into gains.
 //
-// Every body is a `todo()`.  The signatures are the design, and the
-// compiler checks them as claims; see the README for the stamp.
-//
 // A SEPARATE MODULE WITH ITS OWN STATE, on purpose.  A tuner is not a
 // controller: it drives the plant with a SQUARE WAVE rather than a
 // proportional signal, it produces no setpoint tracking at all, and a
@@ -120,7 +117,12 @@ pub enum PidTuneRule
 //     println("${pidtune.rule_code(PidNoOvershoot)}")    // 4
 // ```
 pub fn rule_code(r: PidTuneRule) -> Int []
-    todo("pid-nv.pidtune.rule_code")
+    match r
+        PidZieglerNicholsClassic => PID_RULE_ZN_CLASSIC
+        PidZieglerNicholsPi      => PID_RULE_ZN_PI
+        PidTyreusLuyben          => PID_RULE_TYREUS_LUYBEN
+        PidPessenIntegral        => PID_RULE_PESSEN
+        PidNoOvershoot           => PID_RULE_NO_OVERSHOOT
 
 // The rule a discriminant names, or `None`.
 //
@@ -133,7 +135,17 @@ pub fn rule_code(r: PidTuneRule) -> Int []
 //         None    => println("no such rule")
 // ```
 pub fn rule_of_code(code: Int) -> ?PidTuneRule []
-    todo("pid-nv.pidtune.rule_of_code")
+    if code == PID_RULE_ZN_CLASSIC
+        return Some(PidZieglerNicholsClassic)
+    if code == PID_RULE_ZN_PI
+        return Some(PidZieglerNicholsPi)
+    if code == PID_RULE_TYREUS_LUYBEN
+        return Some(PidTyreusLuyben)
+    if code == PID_RULE_PESSEN
+        return Some(PidPessenIntegral)
+    if code == PID_RULE_NO_OVERSHOOT
+        return Some(PidNoOvershoot)
+    None
 
 // ── What the experiment found ────────────────────────────────────────
 
@@ -170,7 +182,7 @@ struct PidUltimate
 //     println("${pidtune.ultimate_gain(pidtune.ultimate(2.5, 30.0))}")     // 2.5
 // ```
 pub fn ultimate(ku: Float, tu: Float) -> PidUltimate []
-    todo("pid-nv.pidtune.ultimate")
+    PidUltimate { ku: ku, tu: tu }
 
 // The ultimate gain.
 //
@@ -181,7 +193,7 @@ pub fn ultimate(ku: Float, tu: Float) -> PidUltimate []
 //     println("${pidtune.ultimate_gain(pidtune.ultimate(2.0, 10.0))}")     // 2
 // ```
 pub fn ultimate_gain(u: PidUltimate) -> Float []
-    todo("pid-nv.pidtune.ultimate_gain")
+    u.ku
 
 // The ultimate period, in seconds.
 //
@@ -192,7 +204,7 @@ pub fn ultimate_gain(u: PidUltimate) -> Float []
 //     println("${pidtune.ultimate_period(pidtune.ultimate(2.0, 10.0))}")   // 10
 // ```
 pub fn ultimate_period(u: PidUltimate) -> Float []
-    todo("pid-nv.pidtune.ultimate_period")
+    u.tu
 
 // `None` if `code` is a rule this package has, the refusal if it is
 // not.
@@ -209,8 +221,11 @@ pub fn ultimate_period(u: PidUltimate) -> Float []
 //         Some(_) => println("no such rule")
 //         None    => println("a rule this package has")
 // ```
-pub fn check_rule(code: Int) -> ?PidError []
-    todo("pid-nv.pidtune.check_rule")
+pub @tier(app)
+fn check_rule(code: Int) -> ?PidError []
+    if code < PID_RULE_ZN_CLASSIC or code > PID_RULE_NO_OVERSHOOT
+        return Some(PidUnknownPolicyCode("rule", code))
+    None
 
 // The gains a rule produces from an ultimate gain and period.
 //
@@ -235,7 +250,30 @@ pub fn check_rule(code: Int) -> ?PidError []
 //     println("${pid.kp(g)}")
 // ```
 pub fn gains_from(u: PidUltimate, rule_code: Int) -> PidGains []
-    todo("pid-nv.pidtune.gains_from")
+    // A `Ku` or a `Tu` of zero is an experiment that found nothing, and
+    // a negative one is arithmetic on noise.  Both take the early way
+    // out, before any division by `Tu` can happen.
+    if u.ku <= 0.0 or u.tu <= 0.0
+        return pid.gains(0.0, 0.0, 0.0)
+    // The tables give `kp`, `Ti` and `Td`; this package's `PidGains` is
+    // the parallel form, so `ki = kp/Ti` and `kd = kp*Td` — the
+    // conversions every reference prints beside the table.
+    if rule_code == PID_RULE_ZN_CLASSIC
+        return pid.gains(0.6 * u.ku, 0.6 * u.ku / (u.tu / 2.0), 0.6 * u.ku * (u.tu / 8.0))
+    if rule_code == PID_RULE_ZN_PI
+        // `Td` is absent rather than small: a PI loop's `kd` is exactly
+        // zero, and a caller reading it back gets zero.
+        return pid.gains(0.45 * u.ku, 0.45 * u.ku / (u.tu / 1.2), 0.0)
+    if rule_code == PID_RULE_TYREUS_LUYBEN
+        return pid.gains(0.45 * u.ku, 0.45 * u.ku / (2.2 * u.tu), 0.45 * u.ku * (u.tu / 6.3))
+    if rule_code == PID_RULE_PESSEN
+        return pid.gains(0.7 * u.ku, 0.7 * u.ku / (u.tu / 2.5), 0.7 * u.ku * (3.0 * u.tu / 20.0))
+    if rule_code == PID_RULE_NO_OVERSHOOT
+        return pid.gains(0.2 * u.ku, 0.2 * u.ku / (u.tu / 2.0), 0.2 * u.ku * (u.tu / 3.0))
+    // A rule code this package does not have.  Zero gains: a controller
+    // that does nothing is the one safe answer a `@value` function can
+    // give, and `check_rule` is what says why.
+    pid.gains(0.0, 0.0, 0.0)
 
 // ── The experiment ───────────────────────────────────────────────────
 
@@ -300,7 +338,13 @@ struct PidRelay
 //     println("${pidtune.relay_amplitude(pidtune.relay(21.0, 50.0, 0.5))}")   // 50
 // ```
 pub fn relay(setpoint: Float, amplitude: Float, hysteresis: Float) -> PidRelay []
-    todo("pid-nv.pidtune.relay")
+    // `high: true`: the experiment starts by driving the actuator one
+    // way or the other, and which way it starts makes no difference to
+    // the period — so it starts high, which is the state a reader can
+    // check against `relay_output` on the first call.
+    PidRelay { setpoint: setpoint, amplitude: amplitude, hysteresis: hysteresis,
+               high: true, t: 0.0, last_rise: 0.0, period: 0.0, prev_period: 0.0,
+               peak_high: 0.0, peak_low: 0.0, swing: 0.0, cycles: 0, primed: false }
 
 // Advance the experiment by `dt` seconds with a new `measurement`.
 //
@@ -318,7 +362,51 @@ pub fn relay(setpoint: Float, amplitude: Float, hysteresis: Float) -> PidRelay [
 //     println("${pidtune.relay_output(r)}")
 // ```
 pub fn relay_step(r: PidRelay, measurement: Float, dt: Float) -> PidRelay []
-    todo("pid-nv.pidtune.relay_step")
+    if dt <= 0.0
+        return r
+    let t = r.t + dt
+    var high = r.high
+    var last_rise = r.last_rise
+    var period = r.period
+    var prev_period = r.prev_period
+    var cycles = r.cycles
+    var peak_high = r.peak_high
+    var peak_low = r.peak_low
+    var swing = r.swing
+    // The peaks are tracked every step: the swing the describing
+    // function wants is a peak-to-peak, and it is cheapest to keep the
+    // two extremes as they happen.
+    if r.primed
+        if measurement > peak_high
+            peak_high = measurement
+        if measurement < peak_low
+            peak_low = measurement
+    else
+        peak_high = measurement
+        peak_low = measurement
+    // Leaving the band is what flips the relay.  Inside it — which is
+    // where sensor noise lives — nothing at all happens, and that is the
+    // whole reason the band is a parameter.
+    if high and measurement > r.setpoint + r.hysteresis
+        high = false
+    if not high and measurement < r.setpoint - r.hysteresis
+        // The rising edge: the period is the time since the previous
+        // one, and the peaks gathered in between are that period's
+        // peak-to-peak.  The FIRST rise has nothing to measure against,
+        // so it only starts the clock — which is why `last_rise` is
+        // tested rather than `cycles`.
+        if last_rise > 0.0
+            prev_period = period
+            period = t - last_rise
+            cycles = cycles + 1
+            swing = peak_high - peak_low
+        last_rise = t
+        peak_high = measurement
+        peak_low = measurement
+    PidRelay { setpoint: r.setpoint, amplitude: r.amplitude, hysteresis: r.hysteresis,
+               high: high, t: t, last_rise: last_rise, period: period,
+               prev_period: prev_period, peak_high: peak_high, peak_low: peak_low,
+               swing: swing, cycles: cycles, primed: true }
 
 // What to drive the actuator with right now: `+amplitude` or
 // `-amplitude`.
@@ -335,7 +423,9 @@ pub fn relay_step(r: PidRelay, measurement: Float, dt: Float) -> PidRelay []
 //     println("${pidtune.relay_output(pidtune.relay(21.0, 50.0, 0.5))}")
 // ```
 pub fn relay_output(r: PidRelay) -> Float []
-    todo("pid-nv.pidtune.relay_output")
+    if r.high
+        return r.amplitude
+    0.0 - r.amplitude
 
 // How many complete cycles the experiment has seen.
 //
@@ -346,7 +436,7 @@ pub fn relay_output(r: PidRelay) -> Float []
 //     println("${pidtune.relay_cycles(pidtune.relay(21.0, 50.0, 0.5))}")     // 0
 // ```
 pub fn relay_cycles(r: PidRelay) -> Int []
-    todo("pid-nv.pidtune.relay_cycles")
+    r.cycles
 
 // The last complete cycle's period, in seconds.
 //
@@ -357,7 +447,7 @@ pub fn relay_cycles(r: PidRelay) -> Int []
 //     println("${pidtune.relay_period(pidtune.relay(21.0, 50.0, 0.5))}")     // 0
 // ```
 pub fn relay_period(r: PidRelay) -> Float []
-    todo("pid-nv.pidtune.relay_period")
+    r.period
 
 // The last complete cycle's peak-to-peak amplitude.
 //
@@ -368,7 +458,7 @@ pub fn relay_period(r: PidRelay) -> Float []
 //     println("${pidtune.relay_swing(pidtune.relay(21.0, 50.0, 0.5))}")      // 0
 // ```
 pub fn relay_swing(r: PidRelay) -> Float []
-    todo("pid-nv.pidtune.relay_swing")
+    r.swing
 
 // The relay's amplitude, as given.
 //
@@ -379,7 +469,7 @@ pub fn relay_swing(r: PidRelay) -> Float []
 //     println("${pidtune.relay_amplitude(pidtune.relay(21.0, 50.0, 0.5))}")  // 50
 // ```
 pub fn relay_amplitude(r: PidRelay) -> Float []
-    todo("pid-nv.pidtune.relay_amplitude")
+    r.amplitude
 
 // The elapsed seconds since the experiment started.
 //
@@ -390,7 +480,7 @@ pub fn relay_amplitude(r: PidRelay) -> Float []
 //     println("${pidtune.relay_elapsed(pidtune.relay(21.0, 50.0, 0.5))}")    // 0
 // ```
 pub fn relay_elapsed(r: PidRelay) -> Float []
-    todo("pid-nv.pidtune.relay_elapsed")
+    r.t
 
 // Whether the last two complete cycles' periods agree within
 // `tolerance`, a fraction.
@@ -408,7 +498,9 @@ pub fn relay_elapsed(r: PidRelay) -> Float []
 //     println("${pidtune.relay_settled(pidtune.relay(21.0, 50.0, 0.5), 0.05)}")   // false
 // ```
 pub fn relay_settled(r: PidRelay, tolerance: Float) -> Bool []
-    todo("pid-nv.pidtune.relay_settled")
+    if r.cycles < 2 or r.prev_period <= 0.0
+        return false
+    math.abs(r.period - r.prev_period) <= tolerance * r.prev_period
 
 // `None` if the experiment has something to report, the refusal if it
 // has not.
@@ -431,8 +523,13 @@ pub fn relay_settled(r: PidRelay, tolerance: Float) -> Bool []
 //         Some(_) => println("not enough cycles yet")
 //         None    => println("ready to read")
 // ```
-pub fn check_experiment(r: PidRelay) -> ?PidError []
-    todo("pid-nv.pidtune.check_experiment")
+pub @tier(app)
+fn check_experiment(r: PidRelay) -> ?PidError []
+    if r.cycles < 2
+        return Some(PidTuneNotConverged(r.cycles, 2))
+    if r.swing <= 0.0 or r.period <= 0.0
+        return Some(PidTuneNoOscillation)
+    None
 
 // The ultimate gain and period the experiment measured.
 //
@@ -448,4 +545,10 @@ pub fn check_experiment(r: PidRelay) -> ?PidError []
 //     println("${pidtune.ultimate_gain(pidtune.ultimate_of(pidtune.relay(21.0, 50.0, 0.5)))}")
 // ```
 pub fn ultimate_of(r: PidRelay) -> PidUltimate []
-    todo("pid-nv.pidtune.ultimate_of")
+    // `Ku = 4a / (pi * peak_to_peak / 2)`, the describing-function
+    // approximation the module header states, and `Tu` is the period
+    // just measured.  Nothing measured is zero rather than a division
+    // by it.
+    if r.cycles <= 0 or r.swing <= 0.0 or r.period <= 0.0
+        return ultimate(0.0, 0.0)
+    ultimate(4.0 * r.amplitude / (math.pi() * r.swing / 2.0), r.period)

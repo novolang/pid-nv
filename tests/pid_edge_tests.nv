@@ -1,0 +1,129 @@
+// pid_edge_tests.nv — the cases the three shipped suites leave unrun, each
+// one put here because a mutation proved nothing was checking it.
+//
+// WHY A FOURTH FILE.  The oracle drives what the modules promise; it does
+// not drive equal limits, a gain change whose new `ki` is not the old one,
+// a fixed-point derivative with a non-zero `kd`, a `dt` past the ceiling in
+// fixed point, a step whose probe saturates before its output does, or a
+// relay that actually completes a cycle.  Six mutations of exactly those
+// lines left all 38 oracle tests green — the battery is in the 0.1.0
+// CHANGELOG and in the report that landed the package — so each one is owed
+// a case here.  Nothing below is a new behaviour; it is the same arithmetic
+// read where the oracle stops.
+
+use std.test
+use fxq16_16
+use pid
+use pidfx
+use pidtune
+
+@test
+fn test_equal_limits_are_not_ordered_either() [io]
+    test.case("the oracle drives 100 above 0; a low limit equal to the high one saturates on every step")
+    let bad = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(50.0, 50.0), 21.0)
+    match pid.check(bad)
+        Some(e) =>
+            match e
+                PidLimitsNotOrdered(lo, hi) =>
+                    test.assert_eq(lo, 50.0)
+                    test.assert_eq(hi, 50.0)
+                _                           => test.fail("equal limits are not ordered")
+        None    => test.fail("a controller whose limits are equal integrates into nothing")
+
+@test
+fn test_a_gain_change_rescales_the_integral_and_leaves_the_terms() [io]
+    test.case("the output pin is invariant under the mutation this case exists to kill")
+    var p = pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+    p = pid.step(p, 19.0, 0.1)
+    // err 2.0, elapsed 0.1 → the integral the error asks for is 0.2, and
+    // `ki` of 0.5 makes that a 0.1 integral term.
+    test.assert_eq(pid.integral(p), 0.2)
+    test.assert_eq(pid.i_term(p), 0.1)
+    test.assert_eq(pid.output(p), 4.1)
+
+    test.case("a new ki of 2.0 must divide the old term, not keep the old integral")
+    let q = pid.with_gains(p, pid.gains(2.0, 2.0, 0.1))
+    test.assert_eq(pid.integral(q), 0.05)
+    test.assert_eq(pid.i_term(q), 0.1)
+    test.assert_eq(pid.p_term(q), 4.0)
+    // And the output does not move: that is the whole point of the call,
+    // and it is the one thing the oracle does assert about it.
+    test.assert_eq(pid.output(q), 4.1)
+
+@test
+fn test_the_fixed_point_derivative_divides_by_a_dt_below_one() [io]
+    test.case("sat_div answers the end of the range for any divisor under 1.0, which every dt is")
+    // Gain set with a REAL derivative gain, which the oracle's nominal
+    // controller does not have: with kd of 0 a saturated rate is multiplied
+    // by zero and nothing shows.
+    var p = pidfx.controller_raw(0, 0, 65536, 0 - 6553600, 6553600, 0)
+    // Half a second, so the divisor's raw word is below 65536.
+    p = pidfx.step_raw(p, 0, 32768)
+    test.assert_eq(pidfx.d_term_raw(p), 0)
+    // -2 °C in half a second is -4 per second, and kd of 1.0 makes the
+    // derivative term -4 — a number, not the end of the container.
+    let q = pidfx.step_raw(p, 131072, 32768)
+    test.assert_eq(pidfx.error_raw(q), 0 - 131072)
+    test.assert_eq(pidfx.d_term_raw(q), 0 - 262144)
+    test.assert_eq(pidfx.output_raw(q), 0 - 262144)
+
+@test
+fn test_the_fixed_point_dt_ceiling_is_the_float_form_s() [io]
+    test.case("a device whose duty cycle overruns must not integrate the gap whole")
+    var p = pidfx.controller_raw(0, 65536, 0, 0, 6553600, 0)
+    p = pidfx.with_max_dt(p, fxq16_16.from_int(1))
+    // Four seconds asked for, one second allowed: the integral takes two
+    // degrees of error for one second, not for four.
+    let q = pidfx.step_raw(p, 0 - 131072, 262144)
+    test.assert_eq(pidfx.integral_raw(q), 131072)
+    test.assert_eq(pidfx.output_raw(q), 131072)
+
+@test
+fn test_a_saturated_probe_freezes_the_integral_in_fixed_point() [io]
+    test.case("the probe is what the policy sees, and the probe is clamped")
+    var p = pidfx.controller_raw(65536, 65536, 0, 0, 6553600, 1376256)
+    // Sixty seconds is allowed by the ceiling set here, and 2 °C of error
+    // over sixty seconds is 120: the probe wants 122 and the limit is 100.
+    p = pidfx.with_max_dt(p, fxq16_16.from_int(100))
+    let q = pidfx.step_raw(p, 1245184, 3932160)
+    // Clamping against a limit the error is driving into leaves the
+    // integral where it was, so what leaves the controller is the
+    // proportional term alone — and the output is NOT at its limit,
+    // because the integral did not carry it there.
+    test.assert_eq(pidfx.integral_raw(q), 0)
+    test.assert_eq(pidfx.output_raw(q), 131072)
+    test.assert(not pidfx.is_saturated(q))
+
+@test
+fn test_a_relay_that_oscillates_completes_its_cycles() [io]
+    test.case("the oracle never runs one past its first step, so the period was never measured")
+    var r = pidtune.relay(21.0, 50.0, 0.5)
+    // A plant that answers the square wave: above the band, below it, and
+    // back, one second a sample.  The relay is high to start with.
+    r = pidtune.relay_step(r, 22.0, 1.0)
+    r = pidtune.relay_step(r, 20.0, 1.0)
+    r = pidtune.relay_step(r, 22.0, 1.0)
+    r = pidtune.relay_step(r, 20.0, 1.0)
+    test.assert_eq(pidtune.relay_cycles(r), 1)
+    test.assert_eq(pidtune.relay_period(r), 2.0)
+    test.assert_eq(pidtune.relay_swing(r), 2.0)
+    r = pidtune.relay_step(r, 22.0, 1.0)
+    r = pidtune.relay_step(r, 20.0, 1.0)
+
+    test.case("two full cycles is what the experiment needs to report anything")
+    test.assert_eq(pidtune.relay_cycles(r), 2)
+    test.assert_eq(pidtune.relay_period(r), 2.0)
+    test.assert_eq(pidtune.relay_elapsed(r), 6.0)
+    test.assert_eq(pidtune.relay_swing(r), 2.0)
+    test.assert_none(pidtune.check_experiment(r))
+    test.assert(pidtune.relay_settled(r, 0.05))
+
+    test.case("and the describing function turns that into Ku = 4a/(pi * swing/2)")
+    let u = pidtune.ultimate_of(r)
+    test.assert_eq(pidtune.ultimate_period(u), 2.0)
+    // 4 * 50 / (pi * 1.0) = 63.66197723675813
+    test.assert(math.abs(pidtune.ultimate_gain(u) - 63.66197723675813) < 0.0001)
+
+    test.case("and the gains the table produces from it are the table's")
+    let g = pidtune.gains_from(u, pidtune.PID_RULE_TYREUS_LUYBEN)
+    test.assert(math.abs(pid.kp(g) - 0.45 * 63.66197723675813) < 0.0001)

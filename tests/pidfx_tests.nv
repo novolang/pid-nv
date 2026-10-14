@@ -2,11 +2,6 @@
 // device path, and the one thing this form can get wrong that the
 // Float one cannot.
 //
-// RED ON PURPOSE: every assertion against a FUNCTION reaches
-// `not implemented: pid-nv.<module>.<fn>`, because every body under
-// `src/` is a `todo()`. Assertions against published CONSTANTS pass,
-// because a constant is not a stub.
-//
 // THE NUMBERS BELOW ARE sensorhub's. Its duty cycle is two seconds and
 // its temperature sensor reports quarter-degrees, so a setpoint of
 // 21 °C is 1376256 in Q16.16 and a reading of 19 °C is 1245184. Using
@@ -29,7 +24,7 @@ fn test_the_raw_constructor_is_what_a_device_with_gains_in_flash_calls() [io]
     test.assert_eq(pidfx.setpoint_raw(p), 1376256)
     test.assert_eq(pidfx.output_raw(p), 0)
     test.assert_eq(pidfx.integral_raw(p), 0)
-    test.assert(pidfx.is_primed(p) == false)
+    test.assert(not pidfx.is_primed(p))
 
     test.case("and the typed constructor agrees with it")
     let q = pidfx.controller(
@@ -80,7 +75,7 @@ fn test_a_hold_is_what_sensorhub_s_missing_reading_calls() [io]
     test.assert_eq(pidfx.output_raw(p), out)
     test.assert_eq(pidfx.integral_raw(p), acc)
     test.case("and the derivative is un-primed, so the next real sample does not difference across the gap")
-    test.assert(pidfx.is_primed(p) == false)
+    test.assert(not pidfx.is_primed(p))
     test.assert_eq(pidfx.d_term_raw(pidfx.step_raw(p, 1277952, 131072)), 0)
 
 @test

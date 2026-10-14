@@ -1,8 +1,5 @@
 // pidfx.nv — the same controller in Q16.16, for a core with no FPU.
 //
-// Every body is a `todo()`.  The signatures are the design, and the
-// compiler checks them as claims; see the README for the stamp.
-//
 // WHY A SECOND FORM RATHER THAN A GENERIC ONE.  A type cannot carry a
 // numeric parameter here and there is no trait a `@value` arithmetic
 // type can implement that a `@value` struct can be generic over, so
@@ -100,7 +97,7 @@ struct PidFxLimits
 //     println("${fxq16_16.raw(pidfx.kp(g))}")      // 65536
 // ```
 pub fn gains(kp: FxQ16_16, ki: FxQ16_16, kd: FxQ16_16) -> PidFxGains []
-    todo("pid-nv.pidfx.gains")
+    PidFxGains { kp: kp, ki: ki, kd: kd }
 
 // The proportional gain.
 //
@@ -112,7 +109,7 @@ pub fn gains(kp: FxQ16_16, ki: FxQ16_16, kd: FxQ16_16) -> PidFxGains []
 //     println("${fxq16_16.raw(pidfx.kp(pidfx.gains(fxq16_16.one(), fxq16_16.zero(), fxq16_16.zero())))}")
 // ```
 pub fn kp(g: PidFxGains) -> FxQ16_16 []
-    todo("pid-nv.pidfx.kp")
+    g.kp
 
 // The integral gain.
 //
@@ -124,7 +121,7 @@ pub fn kp(g: PidFxGains) -> FxQ16_16 []
 //     println("${fxq16_16.raw(pidfx.ki(pidfx.gains(fxq16_16.zero(), fxq16_16.one(), fxq16_16.zero())))}")
 // ```
 pub fn ki(g: PidFxGains) -> FxQ16_16 []
-    todo("pid-nv.pidfx.ki")
+    g.ki
 
 // The derivative gain.
 //
@@ -136,7 +133,7 @@ pub fn ki(g: PidFxGains) -> FxQ16_16 []
 //     println("${fxq16_16.raw(pidfx.kd(pidfx.gains(fxq16_16.zero(), fxq16_16.zero(), fxq16_16.one())))}")
 // ```
 pub fn kd(g: PidFxGains) -> FxQ16_16 []
-    todo("pid-nv.pidfx.kd")
+    g.kd
 
 // The output range.
 //
@@ -148,7 +145,7 @@ pub fn kd(g: PidFxGains) -> FxQ16_16 []
 //     println("${fxq16_16.raw(pidfx.limit_low(pidfx.limits(fxq16_16.zero(), fxq16_16.one())))}")
 // ```
 pub fn limits(lo: FxQ16_16, hi: FxQ16_16) -> PidFxLimits []
-    todo("pid-nv.pidfx.limits")
+    PidFxLimits { lo: lo, hi: hi }
 
 // The low limit.
 //
@@ -160,7 +157,7 @@ pub fn limits(lo: FxQ16_16, hi: FxQ16_16) -> PidFxLimits []
 //     println("${fxq16_16.raw(pidfx.limit_low(pidfx.limits(fxq16_16.zero(), fxq16_16.one())))}")
 // ```
 pub fn limit_low(l: PidFxLimits) -> FxQ16_16 []
-    todo("pid-nv.pidfx.limit_low")
+    l.lo
 
 // The high limit.
 //
@@ -172,7 +169,7 @@ pub fn limit_low(l: PidFxLimits) -> FxQ16_16 []
 //     println("${fxq16_16.raw(pidfx.limit_high(pidfx.limits(fxq16_16.zero(), fxq16_16.one())))}")
 // ```
 pub fn limit_high(l: PidFxLimits) -> FxQ16_16 []
-    todo("pid-nv.pidfx.limit_high")
+    l.hi
 
 // ── The controller ───────────────────────────────────────────────────
 
@@ -252,7 +249,13 @@ struct PidFx
 //     println("${fxq16_16.raw(pidfx.setpoint(p))}")
 // ```
 pub fn controller(g: PidFxGains, l: PidFxLimits, setpoint: FxQ16_16) -> PidFx []
-    todo("pid-nv.pidfx.controller")
+    PidFx { gains: g, limits: l, setpoint: setpoint, integral: fxq16_16.zero(),
+            prev_measurement: fxq16_16.zero(), prev_error: fxq16_16.zero(),
+            d_state: fxq16_16.zero(), tau: fxq16_16.zero(), kt: fxq16_16.zero(),
+            dt_max: fxq16_16.one(), output: fxq16_16.zero(),
+            p_term: fxq16_16.zero(), i_term: fxq16_16.zero(),
+            d_term: fxq16_16.zero(), windup: pid.PID_WINDUP_CLAMP,
+            deriv: pid.PID_DERIV_ON_MEASUREMENT, primed: false, saturated: false }
 
 // A controller built entirely from RAW Q16.16 integers.
 //
@@ -273,9 +276,33 @@ pub fn controller(g: PidFxGains, l: PidFxLimits, setpoint: FxQ16_16) -> PidFx []
 // ```
 pub fn controller_raw(kp_raw: Int, ki_raw: Int, kd_raw: Int, lo_raw: Int, hi_raw: Int,
                       setpoint_raw: Int) -> PidFx []
-    todo("pid-nv.pidfx.controller_raw")
+    controller(gains(fxq16_16.from_raw(kp_raw), fxq16_16.from_raw(ki_raw),
+                     fxq16_16.from_raw(kd_raw)),
+               limits(fxq16_16.from_raw(lo_raw), fxq16_16.from_raw(hi_raw)),
+               fxq16_16.from_raw(setpoint_raw))
 
 // ── One step ─────────────────────────────────────────────────────────
+
+// `x` brought inside `l`, in this form's comparison.  The one place this
+// module's clamp is written down.
+fn clamp_output(x: FxQ16_16, l: PidFxLimits) -> FxQ16_16
+    if fxq16_16.compare(x, l.lo) < 0
+        return l.lo
+    if fxq16_16.compare(x, l.hi) > 0
+        return l.hi
+    x
+
+// `a / b`, saturating, for a divisor of any size.
+//
+// NOT `fxq16_16.sat_div`: that one guards the divisor rather than the
+// quotient and answers `max_value` whenever the divisor's raw word is
+// below 65536 — which is every `dt` a control loop actually uses, a
+// 10 ms sample being 655.  `from_ratio` divides the two raw words and
+// clamps the quotient, which is the same no-trap policy applied where
+// the overflow can actually happen.  `fxq16_16.div` would be right and
+// traps; the fixed-point form saturates everywhere.
+fn divide(a: FxQ16_16, b: FxQ16_16) -> FxQ16_16
+    fxq16_16.from_ratio(fxq16_16.raw(a), fxq16_16.raw(b))
 
 // Advance the controller by `dt` seconds with a new `measurement`.
 //
@@ -302,7 +329,72 @@ pub fn controller_raw(kp_raw: Int, ki_raw: Int, kd_raw: Int, lo_raw: Int, hi_raw
 //     println("${fxq16_16.raw(pidfx.output(p))}")
 // ```
 pub fn step(p: PidFx, measurement: FxQ16_16, dt: FxQ16_16) -> PidFx []
-    todo("pid-nv.pidfx.step")
+    if fxq16_16.compare(dt, fxq16_16.zero()) <= 0
+        return hold(p)
+    var elapsed = dt
+    if fxq16_16.compare(elapsed, p.dt_max) > 0
+        elapsed = p.dt_max
+    // An unrecognized policy code resolves to clamping, as it does in
+    // the `Float` form: a code nobody meant must not switch anti-windup
+    // off.
+    let policy = windup_of(p)
+    let err = fxq16_16.sat_sub(p.setpoint, measurement)
+    let pe = fxq16_16.sat_mul(p.gains.kp, err)
+    var ds = fxq16_16.zero()
+    if p.primed
+        // `-(m - m_prev) / dt`, written as `(m_prev - m) / dt` so that
+        // negating the minimum value cannot be reached at all.
+        var raw = divide(fxq16_16.sat_sub(p.prev_measurement, measurement), elapsed)
+        if p.deriv == pid.PID_DERIV_ON_ERROR
+            raw = divide(fxq16_16.sat_sub(err, p.prev_error), elapsed)
+        if fxq16_16.compare(p.tau, fxq16_16.zero()) > 0
+            let alpha = divide(p.tau, fxq16_16.sat_add(p.tau, elapsed))
+            ds = fxq16_16.sat_add(fxq16_16.sat_mul(alpha, p.d_state),
+                                  fxq16_16.sat_mul(fxq16_16.sat_sub(fxq16_16.one(), alpha), raw))
+        else
+            ds = raw
+    let de = fxq16_16.sat_mul(p.gains.kd, ds)
+    let gained = fxq16_16.sat_add(p.integral, fxq16_16.sat_mul(err, elapsed))
+    let probe = fxq16_16.sat_add(fxq16_16.sat_add(pe, fxq16_16.sat_mul(p.gains.ki, gained)), de)
+    let probe_out = clamp_output(probe, p.limits)
+    // Clamping policy: a step whose error drives FURTHER into a limit
+    // that the probe has already reached leaves the integral where it
+    // was.  An error with the opposite sign unwinds.
+    var frozen = false
+    if policy == pid.PID_WINDUP_CLAMP and fxq16_16.compare(probe_out, probe) != 0
+        if fxq16_16.compare(err, fxq16_16.zero()) > 0
+            and fxq16_16.compare(probe_out, p.limits.hi) == 0
+            frozen = true
+        if fxq16_16.compare(err, fxq16_16.zero()) < 0
+            and fxq16_16.compare(probe_out, p.limits.lo) == 0
+            frozen = true
+    var acc = gained
+    if frozen
+        acc = p.integral
+    var it = fxq16_16.sat_mul(p.gains.ki, acc)
+    var unsat = fxq16_16.sat_add(fxq16_16.sat_add(pe, it), de)
+    var out = clamp_output(unsat, p.limits)
+    // Back-calculation: the integral takes the step the clamped output
+    // implies instead of the one the error implies, so the two agree
+    // again by the next sample.  Recomputed from `p.integral`, not from
+    // `acc` — the clamp branch above must not be able to skip this one,
+    // and both policies can be selected on the same controller over
+    // time.
+    if policy == pid.PID_WINDUP_BACK_CALCULATION
+        let deficit = fxq16_16.sat_sub(probe_out, probe)
+        acc = fxq16_16.sat_add(p.integral,
+                               fxq16_16.sat_mul(
+                                   fxq16_16.sat_add(err, fxq16_16.sat_mul(p.kt, deficit)),
+                                   elapsed))
+        it = fxq16_16.sat_mul(p.gains.ki, acc)
+        unsat = fxq16_16.sat_add(fxq16_16.sat_add(pe, it), de)
+        out = clamp_output(unsat, p.limits)
+    let sat = fxq16_16.compare(out, unsat) != 0
+    PidFx { gains: p.gains, limits: p.limits, setpoint: p.setpoint, integral: acc,
+            prev_measurement: measurement, prev_error: err, d_state: ds,
+            tau: p.tau, kt: p.kt, dt_max: p.dt_max, output: out, p_term: pe,
+            i_term: it, d_term: de, windup: p.windup, deriv: p.deriv,
+            primed: true, saturated: sat }
 
 // Advance the controller with a raw Q16.16 measurement and a raw
 // `dt`.
@@ -320,7 +412,7 @@ pub fn step(p: PidFx, measurement: FxQ16_16, dt: FxQ16_16) -> PidFx []
 //     println("${pidfx.output_raw(p)}")
 // ```
 pub fn step_raw(p: PidFx, measurement_raw: Int, dt_raw: Int) -> PidFx []
-    todo("pid-nv.pidfx.step_raw")
+    step(p, fxq16_16.from_raw(measurement_raw), fxq16_16.from_raw(dt_raw))
 
 // Skip a step: the output stays and the derivative is un-primed.
 //
@@ -337,7 +429,11 @@ pub fn step_raw(p: PidFx, measurement_raw: Int, dt_raw: Int) -> PidFx []
 //     println("${pidfx.is_primed(p)}")             // false
 // ```
 pub fn hold(p: PidFx) -> PidFx []
-    todo("pid-nv.pidfx.hold")
+    PidFx { gains: p.gains, limits: p.limits, setpoint: p.setpoint, integral: p.integral,
+            prev_measurement: p.prev_measurement, prev_error: p.prev_error,
+            d_state: p.d_state, tau: p.tau, kt: p.kt, dt_max: p.dt_max,
+            output: p.output, p_term: p.p_term, i_term: p.i_term, d_term: p.d_term,
+            windup: p.windup, deriv: p.deriv, primed: false, saturated: p.saturated }
 
 // Clear the integral, the derivative state and the output.
 //
@@ -349,7 +445,16 @@ pub fn hold(p: PidFx) -> PidFx []
 //     println("${pidfx.integral_raw(p)}")          // 0
 // ```
 pub fn reset(p: PidFx) -> PidFx []
-    todo("pid-nv.pidfx.reset")
+    // The configuration stays: gains, limits, setpoint, filter, gain,
+    // ceiling and the two policies are what the caller asked for, and
+    // clearing them would make this `controller` with extra steps.
+    PidFx { gains: p.gains, limits: p.limits, setpoint: p.setpoint,
+            integral: fxq16_16.zero(), prev_measurement: fxq16_16.zero(),
+            prev_error: fxq16_16.zero(), d_state: fxq16_16.zero(), tau: p.tau,
+            kt: p.kt, dt_max: p.dt_max, output: fxq16_16.zero(),
+            p_term: fxq16_16.zero(), i_term: fxq16_16.zero(),
+            d_term: fxq16_16.zero(), windup: p.windup, deriv: p.deriv,
+            primed: false, saturated: false }
 
 // ── Bumpless transfer ────────────────────────────────────────────────
 
@@ -366,7 +471,19 @@ pub fn reset(p: PidFx) -> PidFx []
 //     println("${pidfx.output_raw(p)}")            // 0
 // ```
 pub fn with_gains(p: PidFx, g: PidFxGains) -> PidFx []
-    todo("pid-nv.pidfx.with_gains")
+    // The new `ki` divided back out of the old term is the integral
+    // that produces the same contribution, so `p_term + i_term +
+    // d_term` — and therefore the output — is where the old gains left
+    // it.  Nothing else moves, `output` included: this is not a step.
+    var acc = fxq16_16.zero()
+    if fxq16_16.compare(g.ki, fxq16_16.zero()) != 0
+        acc = divide(p.i_term, g.ki)
+    PidFx { gains: g, limits: p.limits, setpoint: p.setpoint, integral: acc,
+            prev_measurement: p.prev_measurement, prev_error: p.prev_error,
+            d_state: p.d_state, tau: p.tau, kt: p.kt, dt_max: p.dt_max,
+            output: p.output, p_term: p.p_term, i_term: fxq16_16.sat_mul(g.ki, acc),
+            d_term: p.d_term, windup: p.windup, deriv: p.deriv,
+            primed: p.primed, saturated: p.saturated }
 
 // The controller made to agree with an output somebody else chose.
 //
@@ -380,7 +497,20 @@ pub fn with_gains(p: PidFx, g: PidFxGains) -> PidFx []
 //     println("${pidfx.output_raw(p)}")            // 2752512
 // ```
 pub fn with_manual_output(p: PidFx, u: FxQ16_16) -> PidFx []
-    todo("pid-nv.pidfx.with_manual_output")
+    let u_clamped = clamp_output(u, p.limits)
+    // The two gain terms are history's, not this instant's: the caller
+    // is choosing an output, and the integral is the only place left to
+    // put the difference.
+    let it = fxq16_16.sat_sub(fxq16_16.sat_sub(u_clamped, p.p_term), p.d_term)
+    var acc = fxq16_16.zero()
+    if fxq16_16.compare(p.gains.ki, fxq16_16.zero()) != 0
+        acc = divide(it, p.gains.ki)
+    PidFx { gains: p.gains, limits: p.limits, setpoint: p.setpoint, integral: acc,
+            prev_measurement: p.prev_measurement, prev_error: p.prev_error,
+            d_state: p.d_state, tau: p.tau, kt: p.kt, dt_max: p.dt_max,
+            output: u_clamped, p_term: p.p_term, i_term: it, d_term: p.d_term,
+            windup: p.windup, deriv: p.deriv, primed: p.primed,
+            saturated: fxq16_16.compare(u_clamped, u) != 0 }
 
 // ── Configuration ────────────────────────────────────────────────────
 
@@ -396,7 +526,12 @@ pub fn with_manual_output(p: PidFx, u: FxQ16_16) -> PidFx []
 //     println("${pidfx.setpoint_raw(p)}")          // 1507328
 // ```
 pub fn with_setpoint(p: PidFx, setpoint: FxQ16_16) -> PidFx []
-    todo("pid-nv.pidfx.with_setpoint")
+    PidFx { gains: p.gains, limits: p.limits, setpoint: setpoint, integral: p.integral,
+            prev_measurement: p.prev_measurement, prev_error: p.prev_error,
+            d_state: p.d_state, tau: p.tau, kt: p.kt, dt_max: p.dt_max,
+            output: p.output, p_term: p.p_term, i_term: p.i_term, d_term: p.d_term,
+            windup: p.windup, deriv: p.deriv, primed: p.primed,
+            saturated: p.saturated }
 
 // The controller with a new setpoint, as a raw Q16.16 integer.
 //
@@ -408,7 +543,7 @@ pub fn with_setpoint(p: PidFx, setpoint: FxQ16_16) -> PidFx []
 //     println("${pidfx.setpoint_raw(p)}")          // 1507328
 // ```
 pub fn with_setpoint_raw(p: PidFx, setpoint_raw: Int) -> PidFx []
-    todo("pid-nv.pidfx.with_setpoint_raw")
+    with_setpoint(p, fxq16_16.from_raw(setpoint_raw))
 
 // The controller with new output limits.
 //
@@ -421,7 +556,12 @@ pub fn with_setpoint_raw(p: PidFx, setpoint_raw: Int) -> PidFx []
 //     println("${fxq16_16.raw(pidfx.limit_high(pidfx.limits_of(pidfx.with_limits(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256), l))))}")
 // ```
 pub fn with_limits(p: PidFx, l: PidFxLimits) -> PidFx []
-    todo("pid-nv.pidfx.with_limits")
+    PidFx { gains: p.gains, limits: l, setpoint: p.setpoint, integral: p.integral,
+            prev_measurement: p.prev_measurement, prev_error: p.prev_error,
+            d_state: p.d_state, tau: p.tau, kt: p.kt, dt_max: p.dt_max,
+            output: p.output, p_term: p.p_term, i_term: p.i_term, d_term: p.d_term,
+            windup: p.windup, deriv: p.deriv, primed: p.primed,
+            saturated: p.saturated }
 
 // The controller with an anti-windup policy given as its
 // discriminant.
@@ -440,7 +580,15 @@ pub fn with_limits(p: PidFx, l: PidFxLimits) -> PidFx []
 //     println("${pidfx.windup_of(p)}")             // 0
 // ```
 pub fn with_windup_code(p: PidFx, code: Int) -> PidFx []
-    todo("pid-nv.pidfx.with_windup_code")
+    // Stored as given, not resolved: `check` has nothing to report
+    // about a code this module quietly corrected, and the caller who
+    // typed 9 wants to hear about it.  `windup_of` is what answers the
+    // policy in force.
+    PidFx { gains: p.gains, limits: p.limits, setpoint: p.setpoint, integral: p.integral,
+            prev_measurement: p.prev_measurement, prev_error: p.prev_error,
+            d_state: p.d_state, tau: p.tau, kt: p.kt, dt_max: p.dt_max,
+            output: p.output, p_term: p.p_term, i_term: p.i_term, d_term: p.d_term,
+            windup: code, deriv: p.deriv, primed: p.primed, saturated: p.saturated }
 
 // The controller with a derivative source given as its discriminant.
 //
@@ -454,7 +602,11 @@ pub fn with_windup_code(p: PidFx, code: Int) -> PidFx []
 //     println("${pidfx.deriv_of(p)}")              // 0
 // ```
 pub fn with_derivative_code(p: PidFx, code: Int) -> PidFx []
-    todo("pid-nv.pidfx.with_derivative_code")
+    PidFx { gains: p.gains, limits: p.limits, setpoint: p.setpoint, integral: p.integral,
+            prev_measurement: p.prev_measurement, prev_error: p.prev_error,
+            d_state: p.d_state, tau: p.tau, kt: p.kt, dt_max: p.dt_max,
+            output: p.output, p_term: p.p_term, i_term: p.i_term, d_term: p.d_term,
+            windup: p.windup, deriv: code, primed: p.primed, saturated: p.saturated }
 
 // The controller with a first-order low-pass on the derivative.
 //
@@ -468,7 +620,16 @@ pub fn with_derivative_code(p: PidFx, code: Int) -> PidFx []
 //     println("${fxq16_16.raw(pidfx.filter_tau(p))}")
 // ```
 pub fn with_derivative_filter(p: PidFx, tau: FxQ16_16) -> PidFx []
-    todo("pid-nv.pidfx.with_derivative_filter")
+    // The value is stored, not rounded through a float: a caller that
+    // passes `from_float(0.01)` and reads the field back gets the same
+    // raw word, because the only representation that changed hands is
+    // the one it used.
+    PidFx { gains: p.gains, limits: p.limits, setpoint: p.setpoint, integral: p.integral,
+            prev_measurement: p.prev_measurement, prev_error: p.prev_error,
+            d_state: p.d_state, tau: tau, kt: p.kt, dt_max: p.dt_max,
+            output: p.output, p_term: p.p_term, i_term: p.i_term, d_term: p.d_term,
+            windup: p.windup, deriv: p.deriv, primed: p.primed,
+            saturated: p.saturated }
 
 // The controller with a back-calculation gain.
 //
@@ -482,7 +643,12 @@ pub fn with_derivative_filter(p: PidFx, tau: FxQ16_16) -> PidFx []
 //     println("${fxq16_16.raw(pidfx.back_calculation_gain(p))}")   // 65536
 // ```
 pub fn with_back_calculation(p: PidFx, kt: FxQ16_16) -> PidFx []
-    todo("pid-nv.pidfx.with_back_calculation")
+    PidFx { gains: p.gains, limits: p.limits, setpoint: p.setpoint, integral: p.integral,
+            prev_measurement: p.prev_measurement, prev_error: p.prev_error,
+            d_state: p.d_state, tau: p.tau, kt: kt, dt_max: p.dt_max,
+            output: p.output, p_term: p.p_term, i_term: p.i_term, d_term: p.d_term,
+            windup: p.windup, deriv: p.deriv, primed: p.primed,
+            saturated: p.saturated }
 
 // The controller with a `dt` ceiling, in seconds.
 //
@@ -499,7 +665,12 @@ pub fn with_back_calculation(p: PidFx, kt: FxQ16_16) -> PidFx []
 //     println("${fxq16_16.raw(pidfx.max_dt(p))}")  // 262144
 // ```
 pub fn with_max_dt(p: PidFx, dt_max: FxQ16_16) -> PidFx []
-    todo("pid-nv.pidfx.with_max_dt")
+    PidFx { gains: p.gains, limits: p.limits, setpoint: p.setpoint, integral: p.integral,
+            prev_measurement: p.prev_measurement, prev_error: p.prev_error,
+            d_state: p.d_state, tau: p.tau, kt: p.kt, dt_max: dt_max,
+            output: p.output, p_term: p.p_term, i_term: p.i_term, d_term: p.d_term,
+            windup: p.windup, deriv: p.deriv, primed: p.primed,
+            saturated: p.saturated }
 
 // ── Reading a controller ─────────────────────────────────────────────
 
@@ -513,7 +684,7 @@ pub fn with_max_dt(p: PidFx, dt_max: FxQ16_16) -> PidFx []
 //     println("${fxq16_16.raw(pidfx.output(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256)))}")
 // ```
 pub fn output(p: PidFx) -> FxQ16_16 []
-    todo("pid-nv.pidfx.output")
+    p.output
 
 // The output as a raw Q16.16 integer.
 //
@@ -527,7 +698,7 @@ pub fn output(p: PidFx) -> FxQ16_16 []
 //     println("${pidfx.output_raw(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")   // 0
 // ```
 pub fn output_raw(p: PidFx) -> Int []
-    todo("pid-nv.pidfx.output_raw")
+    fxq16_16.raw(p.output)
 
 // The proportional term of the last output, raw.
 //
@@ -538,7 +709,7 @@ pub fn output_raw(p: PidFx) -> Int []
 //     println("${pidfx.p_term_raw(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")
 // ```
 pub fn p_term_raw(p: PidFx) -> Int []
-    todo("pid-nv.pidfx.p_term_raw")
+    fxq16_16.raw(p.p_term)
 
 // The integral term of the last output, raw.
 //
@@ -549,7 +720,7 @@ pub fn p_term_raw(p: PidFx) -> Int []
 //     println("${pidfx.i_term_raw(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")
 // ```
 pub fn i_term_raw(p: PidFx) -> Int []
-    todo("pid-nv.pidfx.i_term_raw")
+    fxq16_16.raw(p.i_term)
 
 // The derivative term of the last output, raw.
 //
@@ -560,7 +731,7 @@ pub fn i_term_raw(p: PidFx) -> Int []
 //     println("${pidfx.d_term_raw(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")
 // ```
 pub fn d_term_raw(p: PidFx) -> Int []
-    todo("pid-nv.pidfx.d_term_raw")
+    fxq16_16.raw(p.d_term)
 
 // The accumulated integral, raw, before `ki`.
 //
@@ -571,7 +742,7 @@ pub fn d_term_raw(p: PidFx) -> Int []
 //     println("${pidfx.integral_raw(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")
 // ```
 pub fn integral_raw(p: PidFx) -> Int []
-    todo("pid-nv.pidfx.integral_raw")
+    fxq16_16.raw(p.integral)
 
 // The error the last step saw, raw.
 //
@@ -582,7 +753,7 @@ pub fn integral_raw(p: PidFx) -> Int []
 //     println("${pidfx.error_raw(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")
 // ```
 pub fn error_raw(p: PidFx) -> Int []
-    todo("pid-nv.pidfx.error_raw")
+    fxq16_16.raw(p.prev_error)
 
 // The setpoint.
 //
@@ -594,7 +765,7 @@ pub fn error_raw(p: PidFx) -> Int []
 //     println("${fxq16_16.raw(pidfx.setpoint(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256)))}")
 // ```
 pub fn setpoint(p: PidFx) -> FxQ16_16 []
-    todo("pid-nv.pidfx.setpoint")
+    p.setpoint
 
 // The setpoint, raw.
 //
@@ -605,7 +776,7 @@ pub fn setpoint(p: PidFx) -> FxQ16_16 []
 //     println("${pidfx.setpoint_raw(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")
 // ```
 pub fn setpoint_raw(p: PidFx) -> Int []
-    todo("pid-nv.pidfx.setpoint_raw")
+    fxq16_16.raw(p.setpoint)
 
 // The gains.
 //
@@ -617,7 +788,7 @@ pub fn setpoint_raw(p: PidFx) -> Int []
 //     println("${fxq16_16.raw(pidfx.kp(pidfx.gains_of(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))))}")
 // ```
 pub fn gains_of(p: PidFx) -> PidFxGains []
-    todo("pid-nv.pidfx.gains_of")
+    p.gains
 
 // The output limits.
 //
@@ -629,7 +800,7 @@ pub fn gains_of(p: PidFx) -> PidFxGains []
 //     println("${fxq16_16.raw(pidfx.limit_high(pidfx.limits_of(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))))}")
 // ```
 pub fn limits_of(p: PidFx) -> PidFxLimits []
-    todo("pid-nv.pidfx.limits_of")
+    p.limits
 
 // The anti-windup policy's discriminant.
 //
@@ -640,7 +811,13 @@ pub fn limits_of(p: PidFx) -> PidFxLimits []
 //     println("${pidfx.windup_of(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")   // 1
 // ```
 pub fn windup_of(p: PidFx) -> Int []
-    todo("pid-nv.pidfx.windup_of")
+    // The policy IN FORCE, as in the `Float` form: a code that names no
+    // policy behaves as clamping, and reporting the field's raw contents
+    // here would tell a caller that anti-windup is off when it is on.
+    if p.windup == pid.PID_WINDUP_NONE or p.windup == pid.PID_WINDUP_CLAMP
+        or p.windup == pid.PID_WINDUP_BACK_CALCULATION
+        return p.windup
+    pid.PID_WINDUP_CLAMP
 
 // The derivative source's discriminant.
 //
@@ -651,7 +828,9 @@ pub fn windup_of(p: PidFx) -> Int []
 //     println("${pidfx.deriv_of(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")    // 1
 // ```
 pub fn deriv_of(p: PidFx) -> Int []
-    todo("pid-nv.pidfx.deriv_of")
+    if p.deriv == pid.PID_DERIV_ON_ERROR or p.deriv == pid.PID_DERIV_ON_MEASUREMENT
+        return p.deriv
+    pid.PID_DERIV_ON_MEASUREMENT
 
 // The derivative filter's time constant.
 //
@@ -663,7 +842,7 @@ pub fn deriv_of(p: PidFx) -> Int []
 //     println("${fxq16_16.raw(pidfx.filter_tau(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256)))}")
 // ```
 pub fn filter_tau(p: PidFx) -> FxQ16_16 []
-    todo("pid-nv.pidfx.filter_tau")
+    p.tau
 
 // The back-calculation gain.
 //
@@ -675,7 +854,7 @@ pub fn filter_tau(p: PidFx) -> FxQ16_16 []
 //     println("${fxq16_16.raw(pidfx.back_calculation_gain(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256)))}")
 // ```
 pub fn back_calculation_gain(p: PidFx) -> FxQ16_16 []
-    todo("pid-nv.pidfx.back_calculation_gain")
+    p.kt
 
 // The `dt` ceiling.
 //
@@ -687,7 +866,7 @@ pub fn back_calculation_gain(p: PidFx) -> FxQ16_16 []
 //     println("${fxq16_16.raw(pidfx.max_dt(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256)))}")
 // ```
 pub fn max_dt(p: PidFx) -> FxQ16_16 []
-    todo("pid-nv.pidfx.max_dt")
+    p.dt_max
 
 // Whether the last output hit a limit.
 //
@@ -698,7 +877,7 @@ pub fn max_dt(p: PidFx) -> FxQ16_16 []
 //     println("${pidfx.is_saturated(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")
 // ```
 pub fn is_saturated(p: PidFx) -> Bool []
-    todo("pid-nv.pidfx.is_saturated")
+    p.saturated
 
 // Whether the controller holds a previous sample.
 //
@@ -709,9 +888,19 @@ pub fn is_saturated(p: PidFx) -> Bool []
 //     println("${pidfx.is_primed(pidfx.controller_raw(131072, 0, 0, 0, 6553600, 1376256))}")   // false
 // ```
 pub fn is_primed(p: PidFx) -> Bool []
-    todo("pid-nv.pidfx.is_primed")
+    p.primed
 
 // ── Checking ─────────────────────────────────────────────────────────
+
+// Whether `x` is sitting on either end of the container, which is how a
+// value that did not fit arrives in this form: `from_float(40000.0)`
+// answers `max_value()` and raises nothing.  `FxQ16_16` has no NaN and
+// no infinity, so this is the whole of this form's answer to the
+// `Float` form's `finite`.
+fn at_limit(x: FxQ16_16) -> Bool
+    if fxq16_16.compare(x, fxq16_16.max_value()) == 0
+        return true
+    fxq16_16.compare(x, fxq16_16.min_value()) == 0
 
 // `None` if the controller's configuration is usable, the refusal if
 // it is not.
@@ -736,5 +925,54 @@ pub fn is_primed(p: PidFx) -> Bool []
 //         Some(_) => println("the limits are the wrong way round")
 //         None    => println("usable")
 // ```
-pub fn check(p: PidFx) -> ?PidError []
-    todo("pid-nv.pidfx.check")
+pub @tier(app)
+fn check(p: PidFx) -> ?PidError []
+    // A field that saturated first.  `pid.check`'s `finite` guards
+    // exist because a NaN compares false against everything and every
+    // test below would report the wrong field; the same is true here of
+    // a value wearing the container's end, so the same order applies.
+    // "Not finite" is this form's word for "not representable".
+    if at_limit(p.limits.lo)
+        return Some(PidNotFinite("limit_low"))
+    if at_limit(p.limits.hi)
+        return Some(PidNotFinite("limit_high"))
+    if at_limit(p.setpoint)
+        return Some(PidNotFinite("setpoint"))
+    if at_limit(p.gains.kp)
+        return Some(PidNotFinite("kp"))
+    if at_limit(p.gains.ki)
+        return Some(PidNotFinite("ki"))
+    if at_limit(p.gains.kd)
+        return Some(PidNotFinite("kd"))
+    if at_limit(p.tau)
+        return Some(PidNotFinite("tau"))
+    if at_limit(p.kt)
+        return Some(PidNotFinite("kt"))
+    if at_limit(p.dt_max)
+        return Some(PidNotFinite("dt_max"))
+    if fxq16_16.compare(p.limits.lo, p.limits.hi) >= 0
+        return Some(PidLimitsNotOrdered(fxq16_16.to_float(p.limits.lo),
+                                        fxq16_16.to_float(p.limits.hi)))
+    if fxq16_16.compare(p.gains.kp, fxq16_16.zero()) < 0
+        return Some(PidGainNegative("kp", fxq16_16.to_float(p.gains.kp)))
+    if fxq16_16.compare(p.gains.ki, fxq16_16.zero()) < 0
+        return Some(PidGainNegative("ki", fxq16_16.to_float(p.gains.ki)))
+    if fxq16_16.compare(p.gains.kd, fxq16_16.zero()) < 0
+        return Some(PidGainNegative("kd", fxq16_16.to_float(p.gains.kd)))
+    if fxq16_16.compare(p.tau, fxq16_16.zero()) < 0
+        return Some(PidFilterNegative(fxq16_16.to_float(p.tau)))
+    if fxq16_16.compare(p.kt, fxq16_16.zero()) < 0
+        return Some(PidBackCalculationGainInvalid(fxq16_16.to_float(p.kt)))
+    if p.windup == pid.PID_WINDUP_BACK_CALCULATION
+        and fxq16_16.compare(p.kt, fxq16_16.zero()) == 0
+        return Some(PidBackCalculationGainInvalid(fxq16_16.to_float(p.kt)))
+    if fxq16_16.compare(p.dt_max, fxq16_16.zero()) <= 0
+        return Some(PidMaxDtInvalid(fxq16_16.to_float(p.dt_max)))
+    // The stored code, not `windup_of`'s answer: this is the one place
+    // a code nobody meant is reported rather than papered over.
+    if p.windup != pid.PID_WINDUP_NONE and p.windup != pid.PID_WINDUP_CLAMP
+        and p.windup != pid.PID_WINDUP_BACK_CALCULATION
+        return Some(PidUnknownPolicyCode("windup", p.windup))
+    if p.deriv != pid.PID_DERIV_ON_ERROR and p.deriv != pid.PID_DERIV_ON_MEASUREMENT
+        return Some(PidUnknownPolicyCode("deriv", p.deriv))
+    None

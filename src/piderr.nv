@@ -1,8 +1,5 @@
 // piderr.nv — what a controller configuration can be wrong about.
 //
-// Every body is a `todo()`.  The signatures are the design, and the
-// compiler checks them as claims; see the README for the stamp.
-//
 // THERE IS NO ERROR IN THE LOOP, ONLY IN THE SETUP.  `step` cannot
 // fail: it is a `@value` function, it has nowhere to put a refusal
 // (SPEC § 14.5 keeps an unboxed struct out of a `Result`), and a
@@ -41,10 +38,11 @@ pub enum PidError
     // division somewhere upstream; always worth saying rather than
     // letting it propagate into an actuator.
     PidNotFinite(name: Str)
-    // A discriminant code is not one of the policies this package has.
-    // Reachable only through `with_windup_code` and
-    // `with_derivative_code`, which take an `Int` because a `@value`
-    // struct cannot hold an enum — see the README.
+    // A discriminant code is not one of the codes this package has.
+    // Reachable through `with_windup_code` and `with_derivative_code`,
+    // which take an `Int` because a `@value` struct cannot hold an enum
+    // — see the README — and through `pidtune.check_rule`, whose rule
+    // table is another `Int`-valued vocabulary.
     PidUnknownPolicyCode(field: Str, code: Int)
     // The relay experiment has not seen enough complete cycles to
     // estimate anything.  `got` and `want` are cycle counts.
@@ -69,8 +67,33 @@ pub enum PidError
 //     println(piderr.describe(PidTuneNoOscillation))
 // ```
 impl Error for PidError
+    @tier(app)
     fn message(self) -> Str
-        todo("pid-nv.piderr.PidError.message")
+        // Not `embedded`: a sentence with a number in it is built with
+        // interpolation, and the embedded tier admits neither string
+        // concatenation nor the formatting behind it.  `step` — which
+        // IS embedded — never constructs a variant and never formats
+        // one, so the refusal surface is the calibration-time half of
+        // this package and the device half links without it.
+        match self
+            PidLimitsNotOrdered(lo, hi)       =>
+                "pid: the output limits are ${lo} and ${hi}, and the low limit must be below the high one"
+            PidGainNegative(name, value)      =>
+                "pid: the gain ${name} is ${value} and a negative gain drives away from the setpoint"
+            PidFilterNegative(tau)            =>
+                "pid: the derivative filter's time constant is ${tau} and must not be negative"
+            PidBackCalculationGainInvalid(kt) =>
+                "pid: the back-calculation gain is ${kt}, which is negative, or zero with the back-calculation policy"
+            PidMaxDtInvalid(dt_max)           =>
+                "pid: the dt ceiling is ${dt_max} and must be positive"
+            PidNotFinite(name)                =>
+                "pid: ${name} is not a finite number"
+            PidUnknownPolicyCode(field, code) =>
+                "pid: ${code} is not a policy code for ${field}"
+            PidTuneNotConverged(got, want)    =>
+                "pid: the relay experiment has seen ${got} complete cycles and needs ${want}"
+            PidTuneNoOscillation              =>
+                "pid: the relay experiment saw no oscillation to measure"
 
 // The same sentence as `message`, as a free function, for a caller
 // that has an error value rather than a `Result` to call `.message()`
@@ -82,5 +105,8 @@ impl Error for PidError
 // fn main() [io]
 //     println(piderr.describe(PidLimitsNotOrdered(1.0, 0.0)))
 // ```
-pub fn describe(e: PidError) -> Str []
-    todo("pid-nv.piderr.describe")
+// Not `embedded`, for the reason `message` is not: this is the same
+// sentence by another route.
+pub @tier(app)
+fn describe(e: PidError) -> Str []
+    e.message()

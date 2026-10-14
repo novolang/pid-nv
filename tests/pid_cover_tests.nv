@@ -1,0 +1,357 @@
+// pid_cover_tests.nv — the branches the three shipped suites step over.
+//
+// WHY THIS FILE EXISTS.  `novo test tests/ --cov` measures 333 of 388
+// instrumented lines under `src/`; every one of the 55 it misses is a
+// `return` whose condition the oracle only ever evaluates FALSE (each
+// `check` guard, each code-table arm) or a path a fixture never takes
+// (the fixed-point on-error derivative, the filter, the low-limit
+// freeze, the back-calculation unwind).  None of them is unreachable, so
+// none of them gets an excuse marker: they get a case here, which is
+// what BRIEF §6 prefers.
+//
+// A refusal is asserted BY THE FIELD IT NAMES.  `test.assert_some` is
+// what the oracle uses, and it leaves the string inside free — a `check`
+// that reported `ki` for a bad `kd`, or fired the kt guard for a bad
+// `dt_max`, would satisfy it.  `refused` below turns the option into the
+// name, so a wrong guard fails the same assertion a missing one does.
+
+use std.test
+use fxq16_16
+use pid
+use pidfx
+use pidtune
+
+// The Float form's nominal controller, the oracle's numbers.
+fn nominal() -> PidF
+    pid.controller(pid.gains(2.0, 0.5, 0.1), pid.limits(0.0, 100.0), 21.0)
+
+// The fixed-point form's, at sensorhub's numbers: kp 2.0, ki 0.1,
+// kd 0, output 0..100 per cent, setpoint 21 °C.
+fn nominal_fx() -> PidFx
+    pidfx.controller_raw(131072, 6554, 0, 0, 6553600, 1376256)
+
+// Which field a refusal names.  The variants with nothing to name answer
+// the field they are about, so every case can be one `assert_eq`.
+fn named(e: PidError) -> Str
+    match e
+        PidNotFinite(what)               => what
+        PidGainNegative(what, _)         => what
+        PidUnknownPolicyCode(what, _)    => what
+        PidFilterNegative(_)             => "tau"
+        PidBackCalculationGainInvalid(_) => "kt"
+        PidMaxDtInvalid(_)               => "dt_max"
+        PidLimitsNotOrdered(_, _)        => "limits"
+        PidTuneNotConverged(_, _)        => "cycles"
+        PidTuneNoOscillation             => "oscillation"
+
+// The field a check named, or a phrase that is not a field name — so a
+// check that refused nothing fails the same assertion a wrong refusal
+// does, and the case says which way it went wrong.
+fn refused(e: ?PidError) -> Str
+    match e
+        Some(err) =>
+            named(err)
+        None      =>
+            "<usable>"
+
+// The windup policy a code names, or a phrase that is not one.
+fn windup_of_code_named(code: Int) -> Str
+    match pid.windup_of_code(code)
+        Some(w) =>
+            match w
+                PidWindupNone            => "none"
+                PidWindupClamp           => "clamp"
+                PidWindupBackCalculation => "back-calculation"
+        None    =>
+            "<no such policy>"
+
+// The derivative source a code names, or a phrase that is not one.
+fn deriv_of_code_named(code: Int) -> Str
+    match pid.deriv_of_code(code)
+        Some(d) =>
+            match d
+                PidDerivOnError       => "on-error"
+                PidDerivOnMeasurement => "on-measurement"
+        None    =>
+            "<no such source>"
+
+// The tuning rule a code names, or a phrase that is not one.
+fn rule_named(code: Int) -> Str
+    match pidtune.rule_of_code(code)
+        Some(r) =>
+            match r
+                PidZieglerNicholsClassic => "classic"
+                PidZieglerNicholsPi      => "pi"
+                PidTyreusLuyben          => "tyreus-luyben"
+                PidPessenIntegral        => "pessen"
+                PidNoOvershoot           => "no-overshoot"
+        None    =>
+            "<no such rule>"
+
+@test
+fn test_every_discriminant_code_has_its_answer_or_a_refusal() [io]
+    test.case("each windup policy comes back from its own code, and the rest are refused")
+    test.assert_eq(windup_of_code_named(pid.PID_WINDUP_NONE), "none")
+    test.assert_eq(windup_of_code_named(pid.PID_WINDUP_CLAMP), "clamp")
+    test.assert_eq(windup_of_code_named(pid.PID_WINDUP_BACK_CALCULATION), "back-calculation")
+    test.assert_eq(windup_of_code_named(9), "<no such policy>")
+
+    test.case("and the derivative source the same way")
+    test.assert_eq(deriv_of_code_named(pid.PID_DERIV_ON_ERROR), "on-error")
+    test.assert_eq(deriv_of_code_named(pid.PID_DERIV_ON_MEASUREMENT), "on-measurement")
+    test.assert_eq(deriv_of_code_named(7), "<no such source>")
+
+@test
+fn test_the_readers_and_setters_no_shipped_suite_drives() [io]
+    test.case("the limit readers, which no assertion called with a known pair")
+    let l = pid.limits(0.0 - 1.0, 1.0)
+    test.assert_eq(pid.limit_low(l), 0.0 - 1.0)
+    test.assert_eq(pid.limit_high(l), 1.0)
+
+    test.case("with_limits replaces the limits and moves nothing else")
+    let p = pid.step(nominal(), 19.0, 0.1)
+    let wider = pid.with_limits(p, pid.limits(0.0 - 50.0, 50.0))
+    test.assert_eq(pid.limit_low(pid.limits_of(wider)), 0.0 - 50.0)
+    test.assert_eq(pid.limit_high(pid.limits_of(wider)), 50.0)
+    test.assert_eq(pid.output(wider), pid.output(p))
+    test.assert_eq(pid.integral(wider), pid.integral(p))
+    test.assert_eq(pid.setpoint(wider), 21.0)
+
+    test.case("with_derivative_code stores a code without interpreting it")
+    let on_error = pid.with_derivative_code(nominal(), pid.PID_DERIV_ON_ERROR)
+    test.assert_eq(pid.deriv_of(on_error), pid.PID_DERIV_ON_ERROR)
+    test.assert_eq(pid.deriv_of(nominal()), pid.PID_DERIV_ON_MEASUREMENT)
+    test.assert_eq(pid.deriv_of(pid.with_derivative_code(nominal(), 9)),
+                   pid.PID_DERIV_ON_MEASUREMENT)
+
+@test
+fn test_every_configuration_refusal_names_its_own_field_in_the_float_form() [io]
+    test.case("a value that is not a number is named before anything compares it")
+    test.assert_eq(refused(pid.check(pid.controller(pid.gains(2.0, 0.5, 0.1),
+                                                    pid.limits(math.nan(), 100.0), 21.0))),
+                   "limit_low")
+    test.assert_eq(refused(pid.check(pid.controller(pid.gains(2.0, 0.5, 0.1),
+                                                    pid.limits(0.0, math.nan()), 21.0))),
+                   "limit_high")
+    test.assert_eq(refused(pid.check(pid.controller(pid.gains(2.0, 0.5, 0.1),
+                                                    pid.limits(0.0, 100.0), math.nan()))),
+                   "setpoint")
+    test.assert_eq(refused(pid.check(pid.controller(pid.gains(math.nan(), 0.5, 0.1),
+                                                    pid.limits(0.0, 100.0), 21.0))),
+                   "kp")
+    test.assert_eq(refused(pid.check(pid.controller(pid.gains(2.0, math.nan(), 0.1),
+                                                    pid.limits(0.0, 100.0), 21.0))),
+                   "ki")
+    test.assert_eq(refused(pid.check(pid.controller(pid.gains(2.0, 0.5, math.nan()),
+                                                    pid.limits(0.0, 100.0), 21.0))),
+                   "kd")
+    test.assert_eq(refused(pid.check(pid.with_derivative_filter(nominal(), math.nan()))),
+                   "tau")
+    test.assert_eq(refused(pid.check(pid.with_back_calculation(nominal(), math.nan()))),
+                   "kt")
+    test.assert_eq(refused(pid.check(pid.with_max_dt(nominal(), math.nan()))),
+                   "dt_max")
+
+    test.case("a negative gain names THAT gain")
+    test.assert_eq(refused(pid.check(pid.controller(pid.gains(0.0 - 2.0, 0.5, 0.1),
+                                                    pid.limits(0.0, 100.0), 21.0))),
+                   "kp")
+    test.assert_eq(refused(pid.check(pid.controller(pid.gains(2.0, 0.0 - 0.5, 0.1),
+                                                    pid.limits(0.0, 100.0), 21.0))),
+                   "ki")
+    test.assert_eq(refused(pid.check(pid.controller(pid.gains(2.0, 0.5, 0.0 - 0.1),
+                                                    pid.limits(0.0, 100.0), 21.0))),
+                   "kd")
+
+    test.case("and the three fields with a range but no sign")
+    test.assert_eq(refused(pid.check(pid.with_derivative_filter(nominal(), 0.0 - 1.0))),
+                   "tau")
+    test.assert_eq(refused(pid.check(pid.with_back_calculation(nominal(), 0.0 - 1.0))),
+                   "kt")
+    test.assert_eq(refused(pid.check(pid.with_max_dt(nominal(), 0.0))),
+                   "dt_max")
+
+    test.case("an unknown code names the field whose vocabulary it fails to be")
+    test.assert_eq(refused(pid.check(pid.with_windup_code(nominal(), 9))), "windup")
+    test.assert_eq(refused(pid.check(pid.with_derivative_code(nominal(), 9))), "deriv")
+
+    test.case("and a controller with nothing wrong is usable")
+    test.assert_eq(refused(pid.check(nominal())), "<usable>")
+
+@test
+fn test_every_configuration_refusal_names_its_own_field_in_fixed_point() [io]
+    let saturated = fxq16_16.from_float(40000.0)   // clamps to max_value
+
+    test.case("a field wearing the end of the container is named first, in check's order")
+    test.assert_eq(refused(pidfx.check(pidfx.controller(pidfx.gains(fxq16_16.from_int(2),
+                                                                    fxq16_16.from_int(1),
+                                                                    fxq16_16.zero()),
+                                                        pidfx.limits(saturated, fxq16_16.from_int(100)),
+                                                        fxq16_16.from_int(21)))),
+                   "limit_low")
+    test.assert_eq(refused(pidfx.check(pidfx.controller(pidfx.gains(fxq16_16.from_int(2),
+                                                                    fxq16_16.from_int(1),
+                                                                    fxq16_16.zero()),
+                                                        pidfx.limits(fxq16_16.zero(), saturated),
+                                                        fxq16_16.from_int(21)))),
+                   "limit_high")
+    test.assert_eq(refused(pidfx.check(pidfx.with_setpoint(nominal_fx(), saturated))),
+                   "setpoint")
+    test.assert_eq(refused(pidfx.check(pidfx.with_gains(nominal_fx(),
+                    pidfx.gains(saturated, fxq16_16.from_int(1), fxq16_16.zero())))),
+                   "kp")
+    test.assert_eq(refused(pidfx.check(pidfx.with_gains(nominal_fx(),
+                    pidfx.gains(fxq16_16.from_int(2), saturated, fxq16_16.zero())))),
+                   "ki")
+    test.assert_eq(refused(pidfx.check(pidfx.with_gains(nominal_fx(),
+                    pidfx.gains(fxq16_16.from_int(2), fxq16_16.from_int(1), saturated)))),
+                   "kd")
+    test.assert_eq(refused(pidfx.check(pidfx.with_derivative_filter(nominal_fx(), saturated))),
+                   "tau")
+    test.assert_eq(refused(pidfx.check(pidfx.with_back_calculation(nominal_fx(), saturated))),
+                   "kt")
+    test.assert_eq(refused(pidfx.check(pidfx.with_max_dt(nominal_fx(), saturated))),
+                   "dt_max")
+
+    test.case("a negative gain names THAT gain, by its float value")
+    test.assert_eq(refused(pidfx.check(pidfx.with_gains(nominal_fx(),
+                    pidfx.gains(fxq16_16.from_int(0 - 2), fxq16_16.from_int(1),
+                                fxq16_16.zero())))),
+                   "kp")
+    test.assert_eq(refused(pidfx.check(pidfx.with_gains(nominal_fx(),
+                    pidfx.gains(fxq16_16.from_int(2), fxq16_16.from_int(0 - 1),
+                                fxq16_16.zero())))),
+                   "ki")
+    test.assert_eq(refused(pidfx.check(pidfx.with_gains(nominal_fx(),
+                    pidfx.gains(fxq16_16.from_int(2), fxq16_16.from_int(1),
+                                fxq16_16.from_int(0 - 1))))),
+                   "kd")
+
+    test.case("the derivative filter, the back-calculation gain and the ceiling")
+    test.assert_eq(refused(pidfx.check(pidfx.with_derivative_filter(nominal_fx(),
+                                                                    fxq16_16.from_int(0 - 1)))),
+                   "tau")
+    test.assert_eq(refused(pidfx.check(pidfx.with_back_calculation(nominal_fx(),
+                                                                   fxq16_16.from_int(0 - 1)))),
+                   "kt")
+    // Zero kt is only a fault while the back-calculation policy is the
+    // one selected, which is the one place a zero is not "off".
+    test.assert_eq(refused(pidfx.check(pidfx.with_windup_code(
+                    pidfx.with_back_calculation(nominal_fx(), fxq16_16.zero()),
+                    pid.PID_WINDUP_BACK_CALCULATION))),
+                   "kt")
+    test.assert_eq(refused(pidfx.check(pidfx.with_max_dt(nominal_fx(), fxq16_16.zero()))),
+                   "dt_max")
+
+    test.case("and the two vocabularies a code can fail to be in")
+    test.assert_eq(refused(pidfx.check(pidfx.with_windup_code(nominal_fx(), 9))), "windup")
+    test.assert_eq(refused(pidfx.check(pidfx.with_derivative_code(nominal_fx(), 9))), "deriv")
+
+    test.case("and a controller with nothing wrong is usable")
+    test.assert_eq(refused(pidfx.check(nominal_fx())), "<usable>")
+
+@test
+fn test_the_fixed_point_derivative_takes_the_error_and_the_filter() [io]
+    test.case("on-error differentiates the ERROR, which the oracle never selected")
+    // kd 1.0 and no P or I, so the answer is the derivative and nothing
+    // else.  The setpoint MOVES between the two steps: with a fixed
+    // setpoint the two sources agree, so only a moving one tells them
+    // apart — and it is the case the kick question is about.
+    var e = pidfx.with_derivative_code(
+                pidfx.controller_raw(0, 0, 65536, 0 - 6553600, 6553600, 1376256),
+                pid.PID_DERIV_ON_ERROR)
+    e = pidfx.step_raw(e, 1245184, 65536)   // 19 °C, 1 s: err 2, not primed
+    e = pidfx.with_setpoint_raw(e, 1441792)   // 22 °C
+    e = pidfx.step_raw(e, 1376256, 65536)   // 21 °C, 1 s: err 1
+    test.assert_eq(pidfx.error_raw(e), 65536)
+    // (1 - 2) / 1 s = -1 per second.  On the measurement it would be
+    // (19 - 21) / 1 = -2, which is the difference this pins.
+    test.assert_eq(pidfx.d_term_raw(e), 0 - 65536)
+
+    test.case("the filter is a real first-order lag, not a rounding")
+    // kd 1.0, tau 1 s, one-second samples, so alpha is exactly a half:
+    // ds = 0.5 * 0 + 0.5 * (-2) = -1, where unfiltered it would be -2.
+    var f = pidfx.controller_raw(0, 0, 65536, 0 - 6553600, 6553600, 0)
+    f = pidfx.with_derivative_filter(f, fxq16_16.from_int(1))
+    f = pidfx.step_raw(f, 0, 65536)
+    f = pidfx.step_raw(f, 131072, 65536)   // 2 °C in 1 s
+    test.assert_eq(pidfx.d_term_raw(f), 0 - 65536)
+
+@test
+fn test_the_fixed_point_freezes_on_the_low_limit_and_unwinds_by_the_gain() [io]
+    test.case("an error driving into the LOW limit freezes the integral there too")
+    // The oracle drives the high side.  setpoint 0, measurement +2 °C,
+    // 60 s of it: the probe wants -122 against a low limit of 0.
+    var p = pidfx.with_max_dt(pidfx.controller_raw(65536, 65536, 0, 0, 6553600, 0),
+                              fxq16_16.from_int(100))
+    let lo = pidfx.step_raw(p, 131072, 3932160)
+    test.assert_eq(pidfx.integral_raw(lo), 0)
+    test.assert_eq(pidfx.output_raw(lo), 0)
+    // The output is at the limit — the proportional term alone drives
+    // below it — while the integral behind it is still zero, which is
+    // the whole point of freezing rather than unwinding.
+    test.assert(pidfx.is_saturated(lo))
+
+    test.case("and back-calculation takes the deficit instead of freezing")
+    // err 2 °C for 60 s wants an integral of 120; the probe is 122 and
+    // the limit 100, so the deficit is -22 and the integral takes
+    // (2 + 1 * -22) * 60 = -1200 instead.
+    var b = pidfx.with_max_dt(pidfx.controller_raw(65536, 65536, 0, 0, 6553600, 1376256),
+                              fxq16_16.from_int(100))
+    b = pidfx.with_back_calculation(b, fxq16_16.from_int(1))
+    b = pidfx.with_windup_code(b, pid.PID_WINDUP_BACK_CALCULATION)
+    let u = pidfx.step_raw(b, 1245184, 3932160)
+    test.assert_eq(pidfx.integral_raw(u), 0 - 78643200)   // -1200 in Q16.16
+    test.assert_eq(pidfx.output_raw(u), 0)
+
+@test
+fn test_the_fixed_point_readers_answer_the_policy_in_force_too() [io]
+    test.case("the limit readers, at a pair neither limit shares")
+    let l = pidfx.limits(fxq16_16.from_int(1), fxq16_16.from_int(2))
+    test.assert_eq(fxq16_16.raw(pidfx.limit_low(l)), 65536)
+    test.assert_eq(fxq16_16.raw(pidfx.limit_high(l)), 131072)
+
+    test.case("an unknown windup code reads back as CLAMPING, the policy in force")
+    test.assert_eq(pidfx.windup_of(nominal_fx()), pid.PID_WINDUP_CLAMP)
+    test.assert_eq(pidfx.windup_of(pidfx.with_windup_code(nominal_fx(), 9)),
+                   pid.PID_WINDUP_CLAMP)
+    test.assert_eq(pidfx.windup_of(pidfx.with_windup_code(
+                       nominal_fx(), pid.PID_WINDUP_BACK_CALCULATION)),
+                   pid.PID_WINDUP_BACK_CALCULATION)
+
+    test.case("and an unknown derivative code reads back as ON MEASUREMENT")
+    test.assert_eq(pidfx.deriv_of(nominal_fx()), pid.PID_DERIV_ON_MEASUREMENT)
+    test.assert_eq(pidfx.deriv_of(pidfx.with_derivative_code(nominal_fx(), 9)),
+                   pid.PID_DERIV_ON_MEASUREMENT)
+    test.assert_eq(pidfx.deriv_of(pidfx.with_derivative_code(
+                       nominal_fx(), pid.PID_DERIV_ON_ERROR)),
+                   pid.PID_DERIV_ON_ERROR)
+
+@test
+fn test_the_rule_table_and_the_no_oscillation_refusal() [io]
+    test.case("each rule comes back from its own code, and the rest are refused")
+    test.assert_eq(rule_named(pidtune.PID_RULE_ZN_CLASSIC), "classic")
+    test.assert_eq(rule_named(pidtune.PID_RULE_ZN_PI), "pi")
+    test.assert_eq(rule_named(pidtune.PID_RULE_TYREUS_LUYBEN), "tyreus-luyben")
+    test.assert_eq(rule_named(pidtune.PID_RULE_PESSEN), "pessen")
+    test.assert_eq(rule_named(pidtune.PID_RULE_NO_OVERSHOOT), "no-overshoot")
+    test.assert_eq(rule_named(9), "<no such rule>")
+
+    test.case("a relay whose numbers contradict its cycle count is refused, not divided by")
+    // Two complete cycles cannot leave a zero swing or a zero period —
+    // the edge suite drives one through two and pins both — so this is
+    // a value a caller can HOLD rather than one the experiment makes:
+    // `PidRelay` is a `@value` with its fields in the open, and the
+    // guard is the refusal for a value that lost half of itself.
+    let half = PidRelay { setpoint: 21.0, amplitude: 50.0, hysteresis: 0.5,
+                          high: true, t: 4.0, last_rise: 2.0, period: 2.0,
+                          prev_period: 2.0, peak_high: 21.0, peak_low: 21.0,
+                          swing: 0.0, cycles: 2, primed: true }
+    test.assert_eq(refused(pidtune.check_experiment(half)), "oscillation")
+
+    test.case("while the same count with something to measure is what the tuner wants")
+    let whole = PidRelay { setpoint: 21.0, amplitude: 50.0, hysteresis: 0.5,
+                           high: true, t: 4.0, last_rise: 2.0, period: 2.0,
+                           prev_period: 2.0, peak_high: 22.0, peak_low: 20.0,
+                           swing: 2.0, cycles: 2, primed: true }
+    test.assert_eq(refused(pidtune.check_experiment(whole)), "<usable>")
