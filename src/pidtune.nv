@@ -43,6 +43,7 @@
 // particular plant and not a constant.
 
 use pid
+use piderr
 
 // ── The tuning rules ─────────────────────────────────────────────────
 

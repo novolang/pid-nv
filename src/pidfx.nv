@@ -43,6 +43,7 @@
 
 use fxq16_16
 use pid
+use piderr
 
 // ── Gains and limits ─────────────────────────────────────────────────
 

@@ -20,6 +20,7 @@ use fxq16_16
 use pid
 use pidfx
 use pidtune
+use piderr
 
 // The Float form's nominal controller, the oracle's numbers.
 fn nominal() -> PidF

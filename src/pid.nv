@@ -51,6 +51,8 @@
 // means never.  It is here because a package that made the right
 // behaviour the only behaviour would be a package a caller could not
 // use to reproduce somebody else's controller.
+use piderr
+
 pub const PID_WINDUP_NONE = 0
 
 // Clamping: while the output is saturated AND the error would push it
