@@ -24,7 +24,7 @@ category    = "embedded"
 tags        = ["pid", "control", "controller", "anti-windup", "autotune", "fixed-point", "embedded", "no-alloc"]
 repository  = "https://github.com/novolang/pid-nv"
 maintainers = ["novo-lang"]
-novo        = ">= 0.20.2"
+novo        = ">= 0.23.0"
 
 # A library: no `main`, so `novo pkg build` type-checks and
 # effect-checks every module under `src/` and writes no binary.
@@ -57,4 +57,4 @@ novo        = ">= 0.20.2"
 # the range alone resolves to the registry's 0.0.1 stub.  `novo pkg
 # publish` refuses a path dependency — see ../PATH-DEPENDENCIES.md and
 # this package's CHANGELOG.
-fixedpoint-nv = { version = "^0.1.0", path = "../fixedpoint-nv" }
+fixedpoint-nv = "^0.1.0"

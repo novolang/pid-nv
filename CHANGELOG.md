@@ -155,6 +155,16 @@ of the README were made false by it and updated (below).
 - **Cascade control, feedforward, gain scheduling and a loop manager** are
   still outside, as 0.0.1 said.
 
+This release requires novo 0.23.0 or later.
+
+## 0.0.4 — 2026-10-28
+
+The dependency requirement is raised: `fixedpoint-nv` from ^0.0.1 to ^0.0.3.  The newest version of each builds with no migration warning under the 0.22.0 compiler, and the older one drew E2050, E2052 or E2055 warnings into this package's build.  No signature and no behaviour changed.
+
+## 0.0.3 — 2026-10-25
+
+A file that names a sibling module's type, function or constant now has the `use` line for that module (E2033, E2003).  No signature and no behaviour changed.
+
 ## 0.0.2 — 2026-09-15
 
 README rewritten to the package README style guide (docs/writing-a-readme.md); no change to the interface.
